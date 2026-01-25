@@ -80,5 +80,31 @@
     <ClInclude Include="imgui\backends\imgui_impl_opengl3.h">
       <Filter>Header Files\imgui</Filter>
     </ClInclude>
+    <ClInclude Include="camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="settings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="gbuffer.vert">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="gbuffer.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="deferred_shading.vert">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="deferred_shading.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="deferred_light.vert">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="deferred_light.frag">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
