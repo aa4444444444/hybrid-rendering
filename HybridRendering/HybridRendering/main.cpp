@@ -1,5 +1,6 @@
 #include <array>
 #include <iostream>
+#include <string_view>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -16,32 +17,19 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#include "constants.h"
 #include "camera.h"
 #include "shader.h"
-#include "settings.h";
+#include "settings.h"
+#include "utility.h"
 
 // forward declarations
-GLFWwindow* initializeWindow();
-void framebufferSizeCallback(GLFWwindow* window, int width, int height);
-void processInput(GLFWwindow* window);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
-unsigned int loadTexture(char const* path, int activeTextureUnit);
-void renderCube();
-void renderQuad();
-void setupImguiWindow();
 
 // settings
-constexpr unsigned int SCR_WIDTH{ 1920 };
-constexpr unsigned int SCR_HEIGHT{ 1080 };
-constexpr unsigned int NR_LIGHTS{ 32 };
-float lastX{ SCR_WIDTH / 2.0f };
-float lastY{ SCR_HEIGHT / 2.0f };
 bool firstMouse{ true };
 Settings::RenderSettings renderSettings{};
-
-// Fly camera
-Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };
 
 // timing
 float deltaTime{ 0.0f };
@@ -52,7 +40,7 @@ int main() {
     plog::init(plog::debug, &consoleAppender);
 
     PLOGD << "Initializing Window";
-        GLFWwindow* window{ initializeWindow() };
+        GLFWwindow* window{ Utility::initializeWindow() };
         if (window == nullptr) {
             PLOGE << "initializeWindow() failed";
             return -1;
@@ -97,8 +85,8 @@ int main() {
     objectPositions.emplace_back(3.0, -0.5, 3.0);
 
     // load textures
-    unsigned int diffuseMap{ loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
-    unsigned int specularMap{ loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
+    unsigned int diffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
+    unsigned int specularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -115,7 +103,7 @@ int main() {
     // Position color buffer
     glGenTextures(1, &gPosition);
     glBindTexture(GL_TEXTURE_2D, gPosition);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
@@ -123,7 +111,7 @@ int main() {
     // Normal color buffer
     glGenTextures(1, &gNormal);
     glBindTexture(GL_TEXTURE_2D, gNormal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
@@ -131,7 +119,7 @@ int main() {
     // Alebdo + Spec color buffer
     glGenTextures(1, &gAlbedoSpec);
     glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL); 
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL); 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
@@ -146,7 +134,7 @@ int main() {
     unsigned int rboDepth{};
     glGenRenderbuffers(1, &rboDepth);
     glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCR_WIDTH, SCR_HEIGHT);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, Constants::SCR_WIDTH, Constants::SCR_HEIGHT);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
 
     // finally check if framebuffer is complete
@@ -158,13 +146,14 @@ int main() {
     std::vector<glm::vec3> lightPositions{};
     std::vector<glm::vec3> lightColors{};
     srand(13); // TODO change to mt
-    for (unsigned int i{ 0 }; i < NR_LIGHTS; ++i)
+    for (unsigned int i{ 0 }; i < Constants::NR_LIGHTS; ++i)
     {
         // calculate slightly random offsets
         float xPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 3.0) };
         float yPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 4.0) };
         float zPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 3.0) };
         lightPositions.emplace_back(xPos, yPos, zPos);
+
         // also calculate random color
         float rColor{ static_cast<float>(((rand() % 100) / 200.0f) + 0.5) }; // between 0.5 and 1.)
         float gColor{ static_cast<float>(((rand() % 100) / 200.0f) + 0.5) }; // between 0.5 and 1.)
@@ -184,21 +173,21 @@ int main() {
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        processInput(window);
+        Utility::processInput(window, renderSettings, deltaTime);
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        setupImguiWindow();
+        Utility::setupImguiWindow(renderSettings);
 
         // 1. geometry pass: render scene's geometry/color data into gbuffer
         glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glm::mat4 projection{ glm::perspective(glm::radians(camera.Zoom), static_cast<float>(SCR_WIDTH) / static_cast<float>(SCR_HEIGHT), 0.1f, 100.0f) };
-        glm::mat4 view = { camera.GetViewMatrix() };
+        glm::mat4 projection{ glm::perspective(glm::radians(renderSettings.camera.Zoom), static_cast<float>(Constants::SCR_WIDTH) / static_cast<float>(Constants::SCR_HEIGHT), 0.1f, 100.0f) };
+        glm::mat4 view = { renderSettings.camera.GetViewMatrix() };
         glm::mat4 model = { glm::mat4(1.0f) };
 
         shaderGeometryPass.use();
@@ -223,7 +212,7 @@ int main() {
             model = glm::translate(model, objectPositions[i]);
             shaderGeometryPass.setMat4("model", model);
 
-            renderCube();
+            Utility::renderCube();
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -263,17 +252,17 @@ int main() {
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", radius);
         }
 
-        shaderLightingPass.setVec3("viewPos", camera.Position);
+        shaderLightingPass.setVec3("viewPos", renderSettings.camera.Position);
 
         // finally render quad
-        renderQuad();
+        Utility::renderQuad();
 
         // 2.5. copy content of geometry's depth buffer to default framebuffer's depth buffer
         glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // write to default framebuffer
 
         // blit to default framebuffer
-        glBlitFramebuffer(0, 0, SCR_WIDTH, SCR_HEIGHT, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        glBlitFramebuffer(0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // 3. render lights on top of scene
@@ -288,7 +277,7 @@ int main() {
             model = glm::scale(model, glm::vec3(0.125f));
             shaderLightBox.setMat4("model", model);
             shaderLightBox.setVec3("lightColor", lightColors[i]);
-            renderCube();
+            Utility::renderCube();
         }
 
         // Render Dear ImGui Menu
@@ -309,98 +298,6 @@ int main() {
 	return 0;
 }
 
-GLFWwindow* initializeWindow() {
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4); // Using OpenGL 4.6
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-    GLFWwindow* window{ glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "HybridRendering", NULL, NULL) };
-    if (window == NULL) {
-        PLOGE << "Failed to create GLFW window";
-        glfwTerminate();
-        return nullptr;
-    }
-
-    glfwMakeContextCurrent(window);
-
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-    {
-        PLOGE << "Failed to initialize GLAD";
-        return nullptr;
-    }
-
-    glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
-    glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
-
-    return window;
-}
-
-void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}
-
-void processInput(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, true);
-    }
-
-    // Change the interactivity
-    // Pressing 1 will disable camera movement on mouse movement and
-    // will reveal the cursor
-    if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) {
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-        renderSettings.enableMouseLook = false;
-    }
-    // Pressing 2 will enable camera movement on mouse movement and
-    // will disable the cursor
-    if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
-        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        renderSettings.enableMouseLook = true;
-    }
-
-    // Move camera position with keys
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        camera.ProcessKeyboard(FORWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        camera.ProcessKeyboard(BACKWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        camera.ProcessKeyboard(LEFT, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        camera.ProcessKeyboard(RIGHT, deltaTime);
-
-    // Adjust camera angle with keys
-    constexpr float adjustAmount{ 0.4f };
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-        lastY += adjustAmount;
-        if (lastY > SCR_HEIGHT) {
-            lastY = SCR_HEIGHT;
-        }
-        camera.ProcessMouseMovement(0.0f, adjustAmount);
-    }
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        lastY -= adjustAmount;
-        if (lastY < 0.0f) {
-            lastY = 0.0f;
-        }
-        camera.ProcessMouseMovement(0.0f, -adjustAmount);
-    }
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        lastX -= adjustAmount;
-        if (lastX < 0.0f) {
-            lastX = 0.0f;
-        }
-        camera.ProcessMouseMovement(-adjustAmount, 0.0f);
-    }
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        lastX += adjustAmount;
-        if (lastX > SCR_WIDTH) {
-            lastX = SCR_WIDTH;
-        }
-        camera.ProcessMouseMovement(adjustAmount, 0.0f);
-    }
-}
-
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
 {
     ImGui_ImplGlfw_CursorPosCallback(window, xposIn, yposIn);
@@ -410,6 +307,8 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
 
     float xpos = static_cast<float>(xposIn);
     float ypos = static_cast<float>(yposIn);
+    float& lastX = renderSettings.lastX;
+    float& lastY = renderSettings.lastY;
     if (firstMouse)
     {
         lastX = xpos;
@@ -423,192 +322,10 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
     lastX = xpos;
     lastY = ypos;
 
-    camera.ProcessMouseMovement(xoffset, yoffset);
+    renderSettings.camera.ProcessMouseMovement(xoffset, yoffset);
 }
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
-    camera.ProcessMouseScroll(static_cast<float>(yoffset));
-}
-
-unsigned int loadTexture(char const* path, int activeTextureUnit)
-{
-    unsigned int textureID{};
-    glGenTextures(1, &textureID);
-
-    int width, height, nrComponents;
-    unsigned char* data = stbi_load(path, &width, &height, &nrComponents, 0);
-    if (data)
-    {
-        GLenum format;
-        if (nrComponents == 1)
-            format = GL_RED;
-        else if (nrComponents == 3)
-            format = GL_RGB;
-        else if (nrComponents == 4)
-            format = GL_RGBA;
-
-        glActiveTexture(activeTextureUnit);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glActiveTexture(GL_TEXTURE0);
-
-        stbi_image_free(data);
-    }
-    else
-    {
-        PLOGE << "Texture failed to load at path: " << path;
-        stbi_image_free(data);
-    }
-
-    return textureID;
-}
-
-// renderCube() renders a 1x1 3D cube in NDC.
-// -------------------------------------------------
-unsigned int cubeVAO{ 0 };
-unsigned int cubeVBO{ 0 };
-void renderCube()
-{
-    // initialize (if necessary)
-    if (cubeVAO == 0) {
-        // Positions, normals, and texture coordinates of a single 3D cube
-        constexpr std::array<float, 8 * 36> cubeVertices{
-            // positions          // normals           // texture coords
-            -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
-             0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  0.0f,
-             0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
-             0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
-            -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  1.0f,
-            -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f,  0.0f,
-
-            -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
-             0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  0.0f,
-             0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
-             0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
-            -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  1.0f,
-            -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f,  0.0f,
-
-            -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
-            -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  1.0f,
-            -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
-            -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
-            -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f,  0.0f,
-            -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
-
-             0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
-             0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  1.0f,
-             0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
-             0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  1.0f,
-             0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f,  0.0f,
-             0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f,  0.0f,
-
-            -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  1.0f,
-             0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  1.0f,
-             0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  0.0f,
-             0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f,  0.0f,
-            -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  0.0f,
-            -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f,  1.0f,
-
-            -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f,
-             0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  1.0f,
-             0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  0.0f,
-             0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f,  0.0f,
-            -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  0.0f,
-            -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f,  1.0f
-        };
-        glGenVertexArrays(1, &cubeVAO);
-        glGenBuffers(1, &cubeVBO);
-        // fill buffer
-        glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices.data(), GL_STATIC_DRAW);
-        // link vertex attributes
-        glBindVertexArray(cubeVAO);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glBindVertexArray(0);
-    }
-    // render Cube
-    glBindVertexArray(cubeVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-    glBindVertexArray(0);
-}
-
-// renderQuad() renders a 1x1 XY quad in NDC
-unsigned int quadVAO{0};
-unsigned int quadVBO{};
-void renderQuad()
-{
-    if (quadVAO == 0)
-    {
-        float quadVertices[] = {
-            // positions        // texture Coords
-            -1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
-            -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
-             1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
-             1.0f, -1.0f, 0.0f, 1.0f, 0.0f,
-        };
-        // setup plane VAO
-        glGenVertexArrays(1, &quadVAO);
-        glGenBuffers(1, &quadVBO);
-        glBindVertexArray(quadVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-    }
-
-    glBindVertexArray(quadVAO);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-}
-
-void setupImguiWindow() {
-    ImGui::Begin("Render Settings");
-
-    ImGui::Text("Render Mode:");
-
-    static ImGuiComboFlags renderModeFlags = 0;
-    renderModeFlags |= ImGuiComboFlags_PopupAlignLeft;
-    renderModeFlags |= ImGuiComboFlags_WidthFitPreview;
-    renderModeFlags &= ~ImGuiComboFlags_NoPreview;
-
-    const std::array<std::string, 5> renderModes{
-        "Textures",
-        "Position",
-        "Normals",
-        "Albedo",
-        "Specular",
-    };
-
-    const std::string renderModePreview{ renderModes[renderSettings.renderMode] };
-
-    if (ImGui::BeginCombo("Render Mode", renderModePreview.c_str(), renderModeFlags)) {
-        for (int i{ 0 }; i < Settings::RenderMode::num_options; ++i) {
-            bool is_selected{ renderSettings.renderMode == i };
-
-            if (ImGui::Selectable(renderModes[i].c_str(), is_selected))
-                renderSettings.renderMode = static_cast<Settings::RenderMode>(i);
-            
-            if (renderSettings.renderMode == i)
-                ImGui::SetItemDefaultFocus();
-        }
-
-        ImGui::EndCombo();
-    }
-
-    ImGui::End();
+    renderSettings.camera.ProcessMouseScroll(static_cast<float>(yoffset));
 }

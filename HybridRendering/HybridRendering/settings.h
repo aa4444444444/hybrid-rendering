@@ -1,6 +1,9 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
+#include "constants.h"
+#include "camera.h"
+
 namespace Settings {
 	/*
 		How we want to render objects
@@ -21,6 +24,11 @@ namespace Settings {
 	struct RenderSettings {
 		RenderMode renderMode{ texture };
 		bool enableMouseLook{ false };
+
+		Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };
+
+		float lastX{ Constants::SCR_WIDTH / 2.0f };
+		float lastY{ Constants::SCR_HEIGHT / 2.0f };
 	};
 }
 
