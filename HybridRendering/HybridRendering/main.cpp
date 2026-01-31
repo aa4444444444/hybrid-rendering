@@ -85,8 +85,10 @@ int main() {
     objectPositions.emplace_back(3.0, -0.5, 3.0);
 
     // load textures
-    unsigned int diffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
-    unsigned int specularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
+    unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
+    unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
+    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
+    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -150,7 +152,7 @@ int main() {
     {
         // calculate slightly random offsets
         float xPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 3.0) };
-        float yPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 4.0) };
+        float yPos{ static_cast<float>(((rand() % 100) / 100.0) * 4.5 - 1.0) };
         float zPos{ static_cast<float>(((rand() % 100) / 100.0) * 6.0 - 3.0) };
         lightPositions.emplace_back(xPos, yPos, zPos);
 
@@ -166,6 +168,9 @@ int main() {
     shaderLightingPass.setInt("gNormal", 1);
     shaderLightingPass.setInt("gAlbedoSpec", 2);
 
+    // =================================================================================================
+    // RENDER LOOP
+    // =================================================================================================
     PLOGD << "Entering render loop";
     while (!glfwWindowShouldClose(window)) {
         // per-frame time logic
@@ -196,15 +201,16 @@ int main() {
 
         // bind diffuse map
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, diffuseMap);
+        glBindTexture(GL_TEXTURE_2D, crateDiffuseMap);
 
         // bind specular map
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, specularMap);
+        glBindTexture(GL_TEXTURE_2D, crateSpecularMap);
 
         // Defines how we render the objects, see gbuffer.frag for details
         shaderGeometryPass.setInt("renderingMode", renderSettings.renderMode);
 
+        // Drawing the 9 boxes in the scene
         for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
         {
             model = glm::mat4(1.0f); // Reset so we don't accumulate through the loop
@@ -214,6 +220,23 @@ int main() {
 
             Utility::renderCube();
         }
+
+        // Drawing the floor
+        // bind diffuse map
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, floorDiffuseMap);
+
+        // bind specular map
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, floorSpecularMap);
+
+        model = glm::mat4(1.0f); // Reset model transform
+        model = glm::scale(model, glm::vec3(5.0f));
+        model = glm::translate(model, glm::vec3{ 0.0f, -0.15f, 0.0f });
+        shaderGeometryPass.setMat4("model", model);
+
+        Utility::renderFloor();
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // 2. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.

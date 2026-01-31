@@ -33,7 +33,7 @@ void main()
     } else if(renderingMode == 3){
         gAlbedoSpec = vec4(texture(texture_diffuse1, TexCoords).rgb, 1.0f);
     } else if(renderingMode == 4){
-        gAlbedoSpec = vec4(texture(texture_specular1, TexCoords).rrr, 1.0f);
+        gAlbedoSpec = vec4(1.0f, 1.0f, 1.0f, texture(texture_specular1, TexCoords).r);
     } else { // Default to rendering texture 
         // and the diffuse per-fragment color
         gAlbedoSpec.rgb = texture(texture_diffuse1, TexCoords).rgb;
