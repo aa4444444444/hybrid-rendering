@@ -221,6 +221,42 @@ namespace Utility {
         glBindVertexArray(0);
     }
 
+    unsigned int floorVAO{ 0 };
+    unsigned int floorVBO{ 0 };
+    void renderFloor() {
+        if (floorVAO == 0) {
+            float floorVertices[] = {
+                // positions        // normals        // texture coords
+                -1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                -1.0f, 0.0f,  1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                 1.0f, 0.0f,  1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f,
+
+                 1.0f, 0.0f, 1.0f,  0.0f, 1.0f, 0.0f, 1.0f, 0.0f,
+                 1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f,
+                -1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+            };
+
+            // setup floor VAO
+            glGenVertexArrays(1, &floorVAO);
+            glGenBuffers(1, &floorVBO);
+            glBindVertexArray(floorVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, floorVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), &floorVertices, GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glBindVertexArray(0);
+        }
+
+        glBindVertexArray(floorVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+    }
+
     // renderQuad() renders a 1x1 XY quad in NDC
     unsigned int quadVAO{ 0 };
     unsigned int quadVBO{};
@@ -255,7 +291,7 @@ namespace Utility {
     void setupImguiWindow(Settings::RenderSettings& renderSettings) {
         ImGui::Begin("Render Settings");
 
-        ImGui::Text("Render Mode:");
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
 
         static ImGuiComboFlags renderModeFlags = 0;
         renderModeFlags |= ImGuiComboFlags_PopupAlignLeft;

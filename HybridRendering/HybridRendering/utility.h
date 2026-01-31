@@ -18,6 +18,8 @@ namespace Utility {
 
 	void renderCube();
 
+	void renderFloor();
+
 	void renderQuad();
 
 	void setupImguiWindow(Settings::RenderSettings& renderSettings);
