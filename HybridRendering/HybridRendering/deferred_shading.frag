@@ -3,7 +3,7 @@ out vec4 FragColor;
 
 in vec2 TexCoords;
 
-const int NR_LIGHTS = 2;
+const int NR_LIGHTS = 1;
 
 uniform sampler2D gPosition;
 uniform sampler2D gNormal;
@@ -60,8 +60,8 @@ void main()
 
     
     float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;
-    FragColor = vec4(Shadow, Shadow, Shadow, 1.0f);
+    // FragColor = vec4(Shadow, Shadow, Shadow, 1.0f);
     
 
-    //FragColor = vec4(lighting, 1.0);
+    FragColor = vec4(lighting, 1.0);
 }

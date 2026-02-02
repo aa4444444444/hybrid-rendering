@@ -7,6 +7,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/string_cast.hpp>
 #include "imgui/imgui.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
@@ -36,6 +38,9 @@ Settings::RenderSettings renderSettings{};
 // timing
 float deltaTime{ 0.0f };
 float lastFrame{ 0.0f };
+
+// Object id counter
+static uint32_t nextID = 0;
 
 int main() {
     plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
@@ -100,7 +105,7 @@ int main() {
 
     // Floor model transform
     glm::mat4 floorModel{ glm::mat4(1.0f) };
-    floorModel = glm::translate(floorModel, glm::vec3{ 0.0f, -1.0f, 0.0f });
+    floorModel = glm::translate(floorModel, glm::vec3{ 0.0f, -1.5f, 0.0f });
     floorModel = glm::scale(floorModel, glm::vec3(5.0f));
     
 
@@ -118,7 +123,8 @@ int main() {
                 objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j], Utility::cubeVertices[j + 1], Utility::cubeVertices[j + 2], 1.0f },
                 objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 8], Utility::cubeVertices[j + 9], Utility::cubeVertices[j + 10], 1.0f },
                 objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 16], Utility::cubeVertices[j + 17], Utility::cubeVertices[j + 18], 1.0f },
-                normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 1.0f } // normal
+                glm::normalize(normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 0.0f }), // normal
+                nextID++
             );
         }
     }
@@ -131,9 +137,18 @@ int main() {
             floorModel * glm::vec4{ Utility::floorVertices[j], Utility::floorVertices[j + 1], Utility::floorVertices[j + 2], 1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 8], Utility::floorVertices[j + 9], Utility::floorVertices[j + 10], 1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
-            floorNormalModel* glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 1.0f } // normal
+            glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }), // normal
+            nextID++
         );
     }
+
+    /*for (const TriangleGPU& triangle : gpuTriangles) {
+        PLOGD << "TRIANGLE:";
+        PLOGD << "v0: " << glm::to_string(triangle.v0);
+        PLOGD << "v1: " << glm::to_string(triangle.v1);
+        PLOGD << "v2: " << glm::to_string(triangle.v2);
+        PLOGD << "normal: " << glm::to_string(triangle.normal);
+    }*/
 
     // Set up triangle SSBO
     unsigned int triangleSSBO{};
@@ -147,6 +162,10 @@ int main() {
     unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
     unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
     unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
+
+    rayTraceShader.use();
+    rayTraceShader.setInt("gPosition", 0);
+    rayTraceShader.setInt("gNormal", 1);
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -220,6 +239,7 @@ int main() {
     // setting up the lights
     std::vector<glm::vec3> lightPositions{};
     std::vector<glm::vec3> lightColors{};
+    /*
     srand(13); // TODO change to mt
     for (unsigned int i{ 0 }; i < Constants::NR_LIGHTS; ++i)
     {
@@ -235,6 +255,10 @@ int main() {
         float bColor{ static_cast<float>(((rand() % 100) / 200.0f) + 0.5) }; // between 0.5 and 1.)
         lightColors.emplace_back(rColor, gColor, bColor);
     }
+    */
+
+    lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
+    lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
     shaderLightingPass.use();
     shaderLightingPass.setInt("gPosition", 0);
@@ -320,8 +344,8 @@ int main() {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, gNormal);
 
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+            /*glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);*/
 
             // send uniforms for only this light
             rayTraceShader.setVec3("light.Position", lightPositions[i]);
