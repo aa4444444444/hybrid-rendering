@@ -22,6 +22,7 @@
 #include "shader.h"
 #include "settings.h"
 #include "utility.h"
+#include "triangle_gpu.h"
 
 // forward declarations
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -29,6 +30,7 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
 // settings
 bool firstMouse{ true };
+bool firstRenderPass{ true };
 Settings::RenderSettings renderSettings{};
 
 // timing
@@ -71,6 +73,7 @@ int main() {
     Shader shaderGeometryPass{ "gbuffer.vert", "gbuffer.frag" };
     Shader shaderLightingPass{ "deferred_shading.vert", "deferred_shading.frag" };
     Shader shaderLightBox{ "deferred_light.vert", "deferred_light.frag" };
+    Shader rayTraceShader{ "ray_trace.comp" };
 
     // Object positions
     std::vector<glm::vec3> objectPositions{};
@@ -83,6 +86,61 @@ int main() {
     objectPositions.emplace_back(-3.0, -0.5, 3.0);
     objectPositions.emplace_back(0.0, -0.5, 3.0);
     objectPositions.emplace_back(3.0, -0.5, 3.0);
+
+    // Object model transforms
+    std::vector<glm::mat4> objectTransforms{};
+    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
+        glm::mat4 model{ glm::mat4(1.0f) }; 
+        model = glm::translate(model, objectPositions[i]);
+        model = glm::scale(model, glm::vec3(0.7f));
+        
+        
+        objectTransforms.push_back(model);
+    }
+
+    // Floor model transform
+    glm::mat4 floorModel{ glm::mat4(1.0f) };
+    floorModel = glm::translate(floorModel, glm::vec3{ 0.0f, -1.0f, 0.0f });
+    floorModel = glm::scale(floorModel, glm::vec3(5.0f));
+    
+
+    // Contains the triangles in the scene that will get passed to the GPU in an SSBO
+    std::vector<TriangleGPU> gpuTriangles{};
+
+    // Populating the gpuTriangles vector
+    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
+    {
+        glm::mat4 normalModel{ glm::transpose(glm::inverse(glm::mat3(objectTransforms[i]))) };
+
+        // Since each point has 8 elements and we want 3 points per triangle
+        for (unsigned int j{ 0 }; j < Utility::cubeVertices.size(); j += (8 * 3)) {
+            gpuTriangles.emplace_back(
+                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j], Utility::cubeVertices[j + 1], Utility::cubeVertices[j + 2], 1.0f },
+                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 8], Utility::cubeVertices[j + 9], Utility::cubeVertices[j + 10], 1.0f },
+                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 16], Utility::cubeVertices[j + 17], Utility::cubeVertices[j + 18], 1.0f },
+                normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 1.0f } // normal
+            );
+        }
+    }
+
+    glm::mat4 floorNormalModel{ glm::transpose(glm::inverse(glm::mat3(floorModel))) };
+
+    // Since each point has 8 elements and we want 3 points per triangle
+    for (unsigned int j{ 0 }; j < Utility::floorVertices.size(); j += (8 * 3)) {
+        gpuTriangles.emplace_back(
+            floorModel * glm::vec4{ Utility::floorVertices[j], Utility::floorVertices[j + 1], Utility::floorVertices[j + 2], 1.0f },
+            floorModel * glm::vec4{ Utility::floorVertices[j + 8], Utility::floorVertices[j + 9], Utility::floorVertices[j + 10], 1.0f },
+            floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
+            floorNormalModel* glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 1.0f } // normal
+        );
+    }
+
+    // Set up triangle SSBO
+    unsigned int triangleSSBO{};
+    glGenBuffers(1, &triangleSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, triangleSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, gpuTriangles.size() * sizeof(TriangleGPU), gpuTriangles.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // load textures
     unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
@@ -144,6 +202,21 @@ int main() {
         PLOGE << "Framebuffer not complete!";
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    // Create Ray Tracing Shadow Textures
+    // We want to create multiple textures, since we need to understand the shadow created by EACH light source
+    // E.g. we can't just say that if it's in the shadow of one light source then it's in shadow period, because
+    // while it could be in the shadow of one light, it might be illuminated by another. 
+    GLuint gRayTracedShadowsArray;
+    glGenTextures(1, &gRayTracedShadowsArray);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, Constants::NR_LIGHTS);
+
+    /*unsigned int gRayTraced{};
+    glGenTextures(1, &gRayTraced);
+    glBindTexture(GL_TEXTURE_2D, gRayTraced);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT);
+    glBindTexture(GL_TEXTURE_2D, 0);*/
+
     // setting up the lights
     std::vector<glm::vec3> lightPositions{};
     std::vector<glm::vec3> lightColors{};
@@ -167,6 +240,7 @@ int main() {
     shaderLightingPass.setInt("gPosition", 0);
     shaderLightingPass.setInt("gNormal", 1);
     shaderLightingPass.setInt("gAlbedoSpec", 2);
+    shaderLightingPass.setInt("shadowMaps", 3);
 
     // =================================================================================================
     // RENDER LOOP
@@ -189,6 +263,7 @@ int main() {
 
         // 1. geometry pass: render scene's geometry/color data into gbuffer
         glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glm::mat4 projection{ glm::perspective(glm::radians(renderSettings.camera.Zoom), static_cast<float>(Constants::SCR_WIDTH) / static_cast<float>(Constants::SCR_HEIGHT), 0.1f, 100.0f) };
@@ -213,10 +288,7 @@ int main() {
         // Drawing the 9 boxes in the scene
         for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
         {
-            model = glm::mat4(1.0f); // Reset so we don't accumulate through the loop
-            model = glm::scale(model, glm::vec3(0.7f));
-            model = glm::translate(model, objectPositions[i]);
-            shaderGeometryPass.setMat4("model", model);
+            shaderGeometryPass.setMat4("model", objectTransforms[i]);
 
             Utility::renderCube();
         }
@@ -230,16 +302,58 @@ int main() {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, floorSpecularMap);
 
-        model = glm::mat4(1.0f); // Reset model transform
-        model = glm::scale(model, glm::vec3(5.0f));
-        model = glm::translate(model, glm::vec3{ 0.0f, -0.15f, 0.0f });
-        shaderGeometryPass.setMat4("model", model);
+        shaderGeometryPass.setMat4("model", floorModel);
 
         Utility::renderFloor();
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // 2. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
+        // 2. Ray Tracer Pass
+        for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
+        {
+            rayTraceShader.use();
+
+            // bind G-buffer textures
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, gPosition);
+
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, gNormal);
+
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+
+            // send uniforms for only this light
+            rayTraceShader.setVec3("light.Position", lightPositions[i]);
+            rayTraceShader.setVec3("light.Color", lightColors[i]);
+
+            const float constant{ 1.0f };
+            const float linear{ 0.7f };
+            const float quadratic{ 1.8f };
+            rayTraceShader.setFloat("light.Linear", linear);
+            rayTraceShader.setFloat("light.Quadratic", quadratic);
+
+            const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
+            float radius = (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic);
+            rayTraceShader.setFloat("light.Radius", radius);
+
+            rayTraceShader.setVec3("viewPos", renderSettings.camera.Position);
+
+            // bind shadow texture for this light
+            glBindImageTexture(0, gRayTracedShadowsArray, 0, GL_FALSE, i, GL_WRITE_ONLY, GL_R16F);
+
+            // bind triangles SSBO
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, triangleSSBO);
+
+            // dispatch compute shader
+            rayTraceShader.dispatch((Constants::SCR_WIDTH + 16 - 1) / 16, (Constants::SCR_HEIGHT + 16 - 1) / 16);
+
+            // make sure writes are visible before next light
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        }
+
+
+        // 3. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shaderLightingPass.use();
@@ -266,13 +380,17 @@ int main() {
             const float constant{ 1.0f }; // note that we don't send this to the shader, we assume it is always 1.0 (in our case)
             const float linear{ 0.7f };
             const float quadratic{ 1.8f };
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", linear);
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", quadratic);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", 0.0014);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", 0.000007);
 
             // then calculate radius of light volume/sphere
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
             float radius{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", radius);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", 20.0f);
+
+            // bind ray tracer image
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
         }
 
         shaderLightingPass.setVec3("viewPos", renderSettings.camera.Position);
@@ -280,7 +398,7 @@ int main() {
         // finally render quad
         Utility::renderQuad();
 
-        // 2.5. copy content of geometry's depth buffer to default framebuffer's depth buffer
+        // 3.5. copy content of geometry's depth buffer to default framebuffer's depth buffer
         glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // write to default framebuffer
 
@@ -288,7 +406,7 @@ int main() {
         glBlitFramebuffer(0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // 3. render lights on top of scene
+        // 4. render lights on top of scene
         shaderLightBox.use();
         shaderLightBox.setMat4("projection", projection);
         shaderLightBox.setMat4("view", view);
@@ -309,6 +427,12 @@ int main() {
 
         glfwSwapBuffers(window);
         glfwPollEvents();
+        
+        if (firstRenderPass) {
+            PLOGD << "Num Triangles in Scene: " << gpuTriangles.size();
+            firstRenderPass = false;
+        }
+            
     }
     PLOGD << "Render Loop Terminated";
 

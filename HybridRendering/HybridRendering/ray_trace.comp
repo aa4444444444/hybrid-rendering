@@ -1,0 +1,124 @@
+#version 460 core
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout (r16f, binding = 0) writeonly uniform image2D shadowImage;
+
+// G-buffer
+layout (binding = 1) uniform sampler2D gPosition;
+layout (binding = 2) uniform sampler2D gNormal;
+
+struct Light {
+    vec3 Position;
+    vec3 Color;
+    
+    float Linear;
+    float Quadratic;
+    float Radius;
+};
+
+// Light
+uniform Light light;
+
+// Camera Position
+uniform vec3 viewPos;
+
+// Scene geometry
+struct Triangle {
+    vec4 v0, v1, v2, normal;
+};
+
+layout(std430, binding = 3) buffer Triangles {
+    Triangle tris[];
+};
+
+// Möller–Trumbore
+// https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
+bool intersectTriangle(
+    vec3 ro, vec3 rd,
+    Triangle tri,
+    float maxDist
+) {
+    vec3 e1 = tri.v1.xyz - tri.v0.xyz;
+    vec3 e2 = tri.v2.xyz - tri.v0.xyz;
+    vec3 p  = cross(rd, e2);
+    float det = dot(e1, p);
+
+    if (abs(det) < 1e-6) return false;
+
+    float invDet = 1.0 / det;
+    vec3 s = ro - tri.v0.xyz;
+    float u = dot(s, p) * invDet;
+    if ((u < 0.0 && abs(u) > 1e-6) || (u > 1.0 && abs(u - 1) > 1e-6)) return false;
+
+    vec3 q = cross(s, e1);
+    float v = dot(rd, q) * invDet;
+    if ((v < 0.0 && abs(v) > 1e-6) || (u + v > 1.0 && abs(u + v - 1) > 1e-6)) return false;
+
+    float t = dot(e2, q) * invDet;
+    return (t > 1e-6 && t < maxDist);
+}
+
+void main(){
+	// https://www.youtube.com/watch?v=nF4X9BIUzx0
+	ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 dims = imageSize(shadowImage);
+    if (pixelCoords.x >= dims.x || pixelCoords.y >= dims.y)
+        return;
+
+    // Since our gPosition stores world-space coordinates, this is the world pos of an object
+    // (if it exists) at the pixel coordiantes. 
+	vec3 objectWorldPos = texelFetch(gPosition, pixelCoords, 0).xyz;
+
+    // Similarly, our world-space normal at the pixel coordinates
+	vec3 objectWorldNormal = normalize(texelFetch(gNormal, pixelCoords, 0).xyz);
+
+    // This check only works because we made sure to set glClearColor to black and clear the gBuffer
+    // before filling it in with data. If the length of objectWorldPos is 0, aka the .xyz = 0, 0, 0
+    // then that means there is no geometry present at the pixel coordinates. If that's the case, we
+    // can say that there is no shadow (1.0f) and return. 
+    if (length(objectWorldPos) == 0.0) {
+       imageStore(shadowImage, pixelCoords, vec4(0.0f));
+       return;
+    }
+
+    /* ==============================================================================
+    "Implementing ray traced shadows in their simplest (hard) form is straightforward:
+    launch a ray from the surface toward the light, and if the ray hits a mesh, the
+    surface is in shadow."
+    =============================================================================== */
+
+    // Ray origin is at the surface of the object
+    vec3 origin = objectWorldPos + objectWorldNormal * 0.001; // Slight offset to avoid self-intersections
+
+    // Vector from the origin to the light source
+    vec3 toLight = light.Position - origin; 
+    
+    // Magnitude of the toLight vector
+    float toLightMagnitude = length(toLight);
+
+    // Direction of the toLight vector
+    vec3 tolightDir = normalize(toLight);
+    
+    // By default we say the shadow is 1.0f, i.e. not in shadow
+    float shadow = 1.0f;
+    
+    /*
+    if (maxDist > light.Radius) {
+        imageStore(shadowImage, pixelCoords, vec4(1.0));
+        return;
+    }
+    */
+
+    // Trace shadow ray
+    for (int i = 0; i < tris.length(); ++i)
+    {
+        Triangle tri = tris[i];
+
+        if (intersectTriangle(origin, tolightDir, tri, toLightMagnitude)) {
+            shadow = 0.0f;
+            break;
+        }
+    }
+
+    imageStore(shadowImage, pixelCoords, vec4(shadow));
+    
+}

@@ -1,4 +1,5 @@
 // NOTE: This file comes from Joey De Vries' LearnOpenGL textbook, it is not my creation
+// Some modifications were made, however. 
 
 #ifndef SHADER_H
 #define SHADER_H
@@ -69,6 +70,49 @@ public:
         // delete the shaders as they're linked into our program now and no longer necessary
         glDeleteShader(vertex);
         glDeleteShader(fragment);
+    }
+    // compute shader constructor
+    // ------------------------------------------------------------------------
+    Shader(const char* computePath)
+    {
+        std::string computeCode;
+        std::ifstream cShaderFile;
+
+        cShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+        try
+        {
+            cShaderFile.open(computePath);
+            std::stringstream cShaderStream;
+            cShaderStream << cShaderFile.rdbuf();
+            cShaderFile.close();
+            computeCode = cShaderStream.str();
+        }
+        catch (std::ifstream::failure& e)
+        {
+            std::cout << "ERROR::SHADER::COMPUTE_FILE_NOT_SUCCESSFULLY_READ: "
+                << e.what() << std::endl;
+        }
+
+        const char* cShaderCode = computeCode.c_str();
+
+        unsigned int compute;
+        compute = glCreateShader(GL_COMPUTE_SHADER);
+        glShaderSource(compute, 1, &cShaderCode, NULL);
+        glCompileShader(compute);
+        checkCompileErrors(compute, "COMPUTE");
+
+        ID = glCreateProgram();
+        glAttachShader(ID, compute);
+        glLinkProgram(ID);
+        checkCompileErrors(ID, "PROGRAM");
+
+        glDeleteShader(compute);
+    }
+    // dispatch compute shader
+    // ------------------------------------------------------------------------
+    void dispatch(unsigned int x, unsigned int y, unsigned int z = 1) const
+    {
+        glDispatchCompute(x, y, z);
     }
     // activate the shader
     // ------------------------------------------------------------------------

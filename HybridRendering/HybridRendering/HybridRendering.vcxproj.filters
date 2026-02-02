@@ -95,6 +95,9 @@
     <ClInclude Include="constants.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="triangle_gpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="gbuffer.vert">
@@ -113,6 +116,9 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="deferred_light.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="ray_trace.comp">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

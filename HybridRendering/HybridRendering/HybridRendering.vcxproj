@@ -162,6 +162,7 @@
     <ClInclude Include="settings.h" />
     <ClInclude Include="shader.h" />
     <ClInclude Include="stb_image.h" />
+    <ClInclude Include="triangle_gpu.h" />
     <ClInclude Include="utility.h" />
   </ItemGroup>
   <ItemGroup>
@@ -171,6 +172,7 @@
     <None Include="deferred_shading.vert" />
     <None Include="gbuffer.frag" />
     <None Include="gbuffer.vert" />
+    <None Include="ray_trace.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
