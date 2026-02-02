@@ -23,7 +23,12 @@ uniform vec3 viewPos;
 
 // Scene geometry
 struct Triangle {
-    vec4 v0, v1, v2, normal;
+    vec4 v0;        // 16 bytes
+    vec4 v1;        // 16 bytes
+    vec4 v2;        // 16 bytes
+    vec4 normal;    // 16 bytes
+    uint id;        // 4 bytes
+                    // padding to next 16-byte boundary (12 byte padding)
 };
 
 layout(std430, binding = 3) buffer Triangles {
@@ -87,7 +92,7 @@ void main(){
     =============================================================================== */
 
     // Ray origin is at the surface of the object
-    vec3 origin = objectWorldPos + objectWorldNormal * 0.001; // Slight offset to avoid self-intersections
+    vec3 origin = objectWorldPos + objectWorldNormal * 0.01; // Slight offset to avoid self-intersections
 
     // Vector from the origin to the light source
     vec3 toLight = light.Position - origin; 
