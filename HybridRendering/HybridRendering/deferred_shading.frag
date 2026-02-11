@@ -23,6 +23,11 @@ struct Light {
 uniform Light lights[NR_LIGHTS];
 uniform vec3 viewPos;
 
+// How/What we want to render
+// 0 ==> Default
+// 1 ==> Shadows
+uniform int renderingMode;
+
 void main()
 {             
     // retrieve data from gbuffer
@@ -61,10 +66,12 @@ void main()
         }
     }
 
-    // Uncomment this to see the shadow maps
-    // float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;
-    // FragColor = vec4(Shadow, Shadow, Shadow, 1.0f);
+    if (renderingMode == 0) {
+        FragColor = vec4(lighting, 1.0);
+    } else {
+        // Shadows
+        float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;
+        FragColor = vec4(Shadow, Shadow, Shadow, 1.0f);
+    }
     
-
-    FragColor = vec4(lighting, 1.0);
 }

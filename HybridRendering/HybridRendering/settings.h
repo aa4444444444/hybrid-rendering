@@ -6,9 +6,9 @@
 
 namespace Settings {
 	/*
-		How we want to render objects
+		How we want to "render" objects in the geometry pass
 	*/
-	enum RenderMode {
+	enum class GBufferRenderMode {
 		// We don't use an enum class so we can leverage the implicit conversion to ints
 		texture, // 0 
 		position, // 1
@@ -19,10 +19,20 @@ namespace Settings {
 	};
 
 	/*
+		How we want to render lighting in the deferred shading pass
+	*/
+	enum class DeferredShadingRenderMode {
+		texture, // 0
+		shadows, // 1
+		num_options
+	};
+
+	/*
 		Defines various render settings
 	*/
 	struct RenderSettings {
-		RenderMode renderMode{ texture };
+		GBufferRenderMode gBufferRenderMode { GBufferRenderMode::texture };
+		DeferredShadingRenderMode deferredShadingRenderMode { DeferredShadingRenderMode::texture };
 		bool enableMouseLook{ false };
 
 		Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };

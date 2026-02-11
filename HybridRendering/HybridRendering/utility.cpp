@@ -242,7 +242,10 @@ namespace Utility {
         renderModeFlags |= ImGuiComboFlags_WidthFitPreview;
         renderModeFlags &= ~ImGuiComboFlags_NoPreview;
 
-        const std::array<std::string, 5> renderModes{
+        /* ==============================================================================
+        G Buffer Render Mode dropdown
+        =============================================================================== */
+        const std::array<std::string, 5> gBufferRenderModes{
             "Textures",
             "Position",
             "Normals",
@@ -250,16 +253,40 @@ namespace Utility {
             "Specular",
         };
 
-        const std::string renderModePreview{ renderModes[renderSettings.renderMode] };
+        const std::string gBufferRenderModePreview{ gBufferRenderModes[static_cast<int>(renderSettings.gBufferRenderMode)] };
 
-        if (ImGui::BeginCombo("Render Mode", renderModePreview.c_str(), renderModeFlags)) {
-            for (int i{ 0 }; i < Settings::RenderMode::num_options; ++i) {
-                bool is_selected{ renderSettings.renderMode == i };
+        if (ImGui::BeginCombo("Geometry Pass Render Mode", gBufferRenderModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::GBufferRenderMode::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.gBufferRenderMode) == i };
 
-                if (ImGui::Selectable(renderModes[i].c_str(), is_selected))
-                    renderSettings.renderMode = static_cast<Settings::RenderMode>(i);
+                if (ImGui::Selectable(gBufferRenderModes[i].c_str(), is_selected))
+                    renderSettings.gBufferRenderMode = static_cast<Settings::GBufferRenderMode>(i);
 
-                if (renderSettings.renderMode == i)
+                if (static_cast<int>(renderSettings.gBufferRenderMode) == i)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
+
+        /* ==============================================================================
+        Deferred Shading Render Mode dropdown
+        =============================================================================== */
+        const std::array<std::string, 5> deferredShadingRenderModes{
+            "Default",
+            "Shadows",
+        };
+
+        const std::string deferredShadingRenderModePreview{ deferredShadingRenderModes[static_cast<int>(renderSettings.deferredShadingRenderMode)] };
+
+        if (ImGui::BeginCombo("Deferred Shading Render Mode", deferredShadingRenderModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::DeferredShadingRenderMode::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.deferredShadingRenderMode) == i };
+
+                if (ImGui::Selectable(deferredShadingRenderModes[i].c_str(), is_selected))
+                    renderSettings.deferredShadingRenderMode = static_cast<Settings::DeferredShadingRenderMode>(i);
+
+                if (static_cast<int>(renderSettings.deferredShadingRenderMode) == i)
                     ImGui::SetItemDefaultFocus();
             }
 
