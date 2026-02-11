@@ -16,6 +16,7 @@ struct Light {
     
     float Linear;
     float Quadratic;
+    float MaxDistance;
     float Radius;
 };
 
@@ -37,7 +38,7 @@ void main()
     {
         // calculate distance between light source and current fragment
         float distance = length(lights[i].Position - FragPos);
-        if(distance < lights[i].Radius)
+        if(distance < lights[i].MaxDistance)
         {
             // diffuse
             vec3 lightDir = normalize(lights[i].Position - FragPos);
@@ -51,15 +52,17 @@ void main()
             diffuse *= attenuation;
             specular *= attenuation;
 
-            float Shadow = texture(shadowMaps, vec3(TexCoords, i)).r; // Since this only has an R channel
+            float shadow = texture(shadowMaps, vec3(TexCoords, i)).r; // Since this only has an R channel
+            
+            // In Shadow
 
-            // lighting += vec3(Shadow);
-            lighting += (diffuse + specular) * Shadow;
+            lighting += (diffuse + specular) * shadow;
+            
         }
     }
 
-    
-    float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;
+    // Uncomment this to see the shadow maps
+    // float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;
     // FragColor = vec4(Shadow, Shadow, Shadow, 1.0f);
     
 
