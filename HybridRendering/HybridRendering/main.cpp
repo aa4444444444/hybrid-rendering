@@ -254,7 +254,7 @@ int main() {
 
     
     lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
-    lightColors.emplace_back(1.0f, 1.0f, 1.0f);
+    lightColors.emplace_back(0.0f, 1.0f, 0.45f);
 
     shaderLightingPass.use();
     shaderLightingPass.setInt("gPosition", 0);
@@ -303,7 +303,7 @@ int main() {
         glBindTexture(GL_TEXTURE_2D, crateSpecularMap);
 
         // Defines how we render the objects, see gbuffer.frag for details
-        shaderGeometryPass.setInt("renderingMode", renderSettings.renderMode);
+        shaderGeometryPass.setInt("renderingMode", static_cast<int>(renderSettings.gBufferRenderMode));
 
         // Drawing the 9 boxes in the scene
         for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
@@ -347,14 +347,13 @@ int main() {
             const float constant{ 1.0f };
             const float linear{ 0.22f };
             const float quadratic{ 0.20f };
-            const float lightRadius{ 0.5f };
             rayTraceShader.setFloat("light.Linear", linear);
             rayTraceShader.setFloat("light.Quadratic", quadratic);
 
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
             float maxDistance{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
             rayTraceShader.setFloat("light.MaxDistance", maxDistance);
-            rayTraceShader.setFloat("light.Radius", lightRadius);
+            rayTraceShader.setFloat("light.Radius", Constants::LIGHT_RADIUS);
 
             rayTraceShader.setVec3("viewPos", renderSettings.camera.Position);
 
@@ -388,6 +387,9 @@ int main() {
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
 
+        // Defines how we render the objects, see deferred_shading.frag for details
+        shaderLightingPass.setInt("renderingMode", static_cast<int>(renderSettings.deferredShadingRenderMode));
+
         // send light relevant uniforms
         for (unsigned int i{ 0 }; i < lightPositions.size(); ++i)
         {
@@ -398,7 +400,6 @@ int main() {
             const float constant{ 1.0f };
             const float linear{ 0.22f };
             const float quadratic{ 0.20f };
-            const float lightRadius{ 0.5f };
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", linear);
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", quadratic);
 
@@ -406,7 +407,7 @@ int main() {
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
             float maxDistance{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].MaxDistance", maxDistance);
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", lightRadius);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", Constants::LIGHT_RADIUS);
 
             // bind ray tracer image
             glActiveTexture(GL_TEXTURE3);
