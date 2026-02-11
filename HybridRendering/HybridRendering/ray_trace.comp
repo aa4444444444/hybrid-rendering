@@ -12,6 +12,7 @@ struct Light {
     
     float Linear;
     float Quadratic;
+    float MaxDistance;
     float Radius;
 };
 
@@ -34,6 +35,14 @@ struct Triangle {
 layout(std430, binding = 3) buffer Triangles {
     Triangle tris[];
 };
+
+// Uniformly sampling positions on a sphere's surface 
+// We use this to implement Area Lights by treating each 
+// input point light as if it were actually a sphere. 
+// 
+// Even though the lights show up as cubes, we're currently
+// modeling their area light as a sphere. 
+
 
 // Möller–Trumbore
 // https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
@@ -106,12 +115,13 @@ void main(){
     // By default we say the shadow is 1.0f, i.e. not in shadow
     float shadow = 1.0f;
     
-    /*
-    if (maxDist > light.Radius) {
+    // If the distance to the light source is greater than the light's radius, 
+    // it should not be in shadow
+    
+    if (toLightMagnitude > light.MaxDistance) {
         imageStore(shadowImage, pixelCoords, vec4(1.0));
         return;
     }
-    */
 
     // Trace shadow ray
     for (int i = 0; i < tris.length(); ++i)

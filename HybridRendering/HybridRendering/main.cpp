@@ -230,15 +230,10 @@ int main() {
     glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
     glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, Constants::NR_LIGHTS);
 
-    /*unsigned int gRayTraced{};
-    glGenTextures(1, &gRayTraced);
-    glBindTexture(GL_TEXTURE_2D, gRayTraced);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT);
-    glBindTexture(GL_TEXTURE_2D, 0);*/
-
     // setting up the lights
     std::vector<glm::vec3> lightPositions{};
     std::vector<glm::vec3> lightColors{};
+    
     /*
     srand(13); // TODO change to mt
     for (unsigned int i{ 0 }; i < Constants::NR_LIGHTS; ++i)
@@ -257,6 +252,7 @@ int main() {
     }
     */
 
+    
     lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
     lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
@@ -344,22 +340,21 @@ int main() {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, gNormal);
 
-            /*glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);*/
-
             // send uniforms for only this light
             rayTraceShader.setVec3("light.Position", lightPositions[i]);
             rayTraceShader.setVec3("light.Color", lightColors[i]);
 
             const float constant{ 1.0f };
-            const float linear{ 0.7f };
-            const float quadratic{ 1.8f };
+            const float linear{ 0.22f };
+            const float quadratic{ 0.20f };
+            const float lightRadius{ 0.5f };
             rayTraceShader.setFloat("light.Linear", linear);
             rayTraceShader.setFloat("light.Quadratic", quadratic);
 
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
-            float radius = (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic);
-            rayTraceShader.setFloat("light.Radius", radius);
+            float maxDistance{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
+            rayTraceShader.setFloat("light.MaxDistance", maxDistance);
+            rayTraceShader.setFloat("light.Radius", lightRadius);
 
             rayTraceShader.setVec3("viewPos", renderSettings.camera.Position);
 
@@ -375,7 +370,6 @@ int main() {
             // make sure writes are visible before next light
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         }
-
 
         // 3. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -401,16 +395,18 @@ int main() {
             shaderLightingPass.setVec3("lights[" + std::to_string(i) + "].Color", lightColors[i]);
 
             // update attenuation parameters and calculate radius
-            const float constant{ 1.0f }; // note that we don't send this to the shader, we assume it is always 1.0 (in our case)
-            const float linear{ 0.7f };
-            const float quadratic{ 1.8f };
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", 0.0014);
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", 0.000007);
+            const float constant{ 1.0f };
+            const float linear{ 0.22f };
+            const float quadratic{ 0.20f };
+            const float lightRadius{ 0.5f };
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", linear);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", quadratic);
 
             // then calculate radius of light volume/sphere
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
-            float radius{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
-            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", 20.0f);
+            float maxDistance{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].MaxDistance", maxDistance);
+            shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Radius", lightRadius);
 
             // bind ray tracer image
             glActiveTexture(GL_TEXTURE3);
