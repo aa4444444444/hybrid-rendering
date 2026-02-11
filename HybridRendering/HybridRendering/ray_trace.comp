@@ -1,4 +1,7 @@
 #version 460 core
+#define M_PI 3.1415926538
+#define M_SAMPLES 16
+
 layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout (r16f, binding = 0) writeonly uniform image2D shadowImage;
 
@@ -41,8 +44,37 @@ layout(std430, binding = 3) buffer Triangles {
 // input point light as if it were actually a sphere. 
 // 
 // Even though the lights show up as cubes, we're currently
-// modeling their area light as a sphere. 
+// modeling their area light as a sphere.
+//
+// This implementation was borrowed from:
+// https://corysimon.github.io/articles/uniformdistn-on-sphere/
+vec3 sampleSphere(vec2 rand){
+    float theta = 2.0f * M_PI * rand.x;
+    float phi = acos(1.0f - 2.0f * rand.y);
 
+    vec3 dir = vec3(
+        sin(phi) * cos(theta),
+        sin(phi) * sin(theta),
+        cos(phi)
+    );
+
+    // Since our sphere is NOT a unit sphere and NOT centered at the origin, 
+    // we have to account for that here:
+    return light.Position + light.Radius * dir;
+}
+
+// https://thebookofshaders.com/10/
+float random (vec2 st) {
+    return fract(sin(dot(st.xy,
+                         vec2(12.9898,78.233)))*
+        43758.5453123);
+}
+
+vec2 random2 (vec2 st, int i) {
+    float r1 = fract(sin(dot(vec2(st) + float(i) * vec2(12.9898,78.233), vec2(12.9898,78.233))) * 43758.5453);
+    float r2 = fract(sin(dot(vec2(st) + float(i) * vec2(93.9898,67.345), vec2(12.345,45.678))) * 12345.6789);
+    return vec2(r1, r2);
+}
 
 // Möller–Trumbore
 // https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
@@ -98,42 +130,68 @@ void main(){
     "Implementing ray traced shadows in their simplest (hard) form is straightforward:
     launch a ray from the surface toward the light, and if the ray hits a mesh, the
     surface is in shadow."
+
+    To implement soft shadows, we have to go a step further by turning our point light
+    into an area light. There are various shapes I could have chosen, but I decided to
+    go with spheres for now. 
+
+    Instead of shooting a ray towards the point, we shoot a random ray to a point on 
+    the surface of the sphere.
     =============================================================================== */
 
-    // Ray origin is at the surface of the object
-    vec3 origin = objectWorldPos + objectWorldNormal * 0.01; // Slight offset to avoid self-intersections
+    // This keeps track of how many of the sample rays are not in shadow. This will 
+    // determine how "soft" of a shadow the pixel should have. 
+    int numVisibleSamples = 0;
 
-    // Vector from the origin to the light source
-    vec3 toLight = light.Position - origin; 
-    
-    // Magnitude of the toLight vector
-    float toLightMagnitude = length(toLight);
+    for (int i = 0; i < M_SAMPLES; ++i){
+        vec2 rand = random2(pixelCoords, i);
+        vec3 sampleLightPos = sampleSphere(rand);
 
-    // Direction of the toLight vector
-    vec3 tolightDir = normalize(toLight);
-    
-    // By default we say the shadow is 1.0f, i.e. not in shadow
-    float shadow = 1.0f;
-    
-    // If the distance to the light source is greater than the light's radius, 
-    // it should not be in shadow
-    
-    if (toLightMagnitude > light.MaxDistance) {
-        imageStore(shadowImage, pixelCoords, vec4(1.0));
-        return;
-    }
+        // Ray origin is at the surface of the object
+        vec3 origin = objectWorldPos + objectWorldNormal * 0.01; // Slight offset to avoid self-intersections
 
-    // Trace shadow ray
-    for (int i = 0; i < tris.length(); ++i)
-    {
-        Triangle tri = tris[i];
+        // Vector from the origin to the light source
+        vec3 toLight = sampleLightPos - origin; 
 
-        if (intersectTriangle(origin, tolightDir, tri, toLightMagnitude)) {
-            shadow = 0.0f;
-            break;
+        // Magnitude of the toLight vector
+        float toLightMagnitude = length(toLight);
+
+        // If the distance to the light source is greater than the light's radius, 
+        // it should not be in shadow
+        if (toLightMagnitude > light.MaxDistance) {
+            // imageStore(shadowImage, pixelCoords, vec4(1.0));
+            // return;
+            ++numVisibleSamples;
+            continue;
         }
-    }
 
-    imageStore(shadowImage, pixelCoords, vec4(shadow));
+        // Direction of the toLight vector
+        vec3 tolightDir = normalize(toLight);
+    
+        // By default we say the shadow is not occluded, i.e. not in shadow
+        bool occluded = false;
+
+        // Trace shadow ray
+        for (int j = 0; j < tris.length(); ++j)
+        {
+            Triangle tri = tris[j];
+
+            if (intersectTriangle(origin, tolightDir, tri, toLightMagnitude)) {
+                // shadow = 0.0f;
+                // break;
+                occluded = true;
+                break; // breaks out of inner for loop over triangles
+            }
+        }
+
+        if (!occluded) {
+            ++numVisibleSamples;
+        }
+    } 
+
+    // Calculate how much is in shadow between 0 (all shadow) and 1 (no shadow) 
+    float inShadow = float(numVisibleSamples) / float(M_SAMPLES);
+
+    imageStore(shadowImage, pixelCoords, vec4(inShadow));
     
 }
