@@ -28,11 +28,23 @@ namespace Settings {
 	};
 
 	/*
+		Whether to use SVGF
+	*/
+	enum class SVGFRenderMode {
+		on, // 0
+		temporal, // 1
+		spatial, // 2
+		off, // 3
+		num_options
+	};
+
+	/*
 		Defines various render settings
 	*/
 	struct RenderSettings {
 		GBufferRenderMode gBufferRenderMode { GBufferRenderMode::texture };
 		DeferredShadingRenderMode deferredShadingRenderMode { DeferredShadingRenderMode::texture };
+		SVGFRenderMode svgfRenderMode{ SVGFRenderMode::on };
 		bool enableMouseLook{ false };
 
 		Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };

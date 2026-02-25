@@ -100,9 +100,6 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="gbuffer.vert">
-      <Filter>Resource Files</Filter>
-    </None>
     <None Include="gbuffer.frag">
       <Filter>Resource Files</Filter>
     </None>
@@ -119,6 +116,15 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="ray_trace.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="temporal_accumulation.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="spatial_filtering.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="gbuffer.vert">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

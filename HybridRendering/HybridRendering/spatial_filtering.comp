@@ -1,0 +1,89 @@
+#version 460 core
+#define FILTER_RADIUS 2
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2DArray inputVisibility;
+layout(binding = 1) uniform sampler2DArray momentsTex;
+layout(binding = 2) uniform sampler2D gPosition;
+layout(binding = 3) uniform sampler2D gNormal;
+
+layout(r16f, binding = 4) writeonly uniform image2DArray outputVisibility;
+
+uniform int lightIndex;
+uniform int stepWidth;
+uniform float phiColor;
+uniform float phiNormal;
+uniform float phiDepth;
+
+
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+
+    ivec3 dims = imageSize(outputVisibility);
+    if (pixel.x >= dims.x || pixel.y >= dims.y)
+        return;
+
+    // The version without light is needed to sample 2D Textures 
+    // The version with light is needed to sample 2D Texture Arrays
+    vec2 texCoordNoLight = (vec2(pixel) + 0.5f) / vec2(dims.x, dims.y);
+    vec3 texCoord = vec3(texCoordNoLight, lightIndex);
+
+    float centerVal = texture(inputVisibility, texCoord).r;
+
+    // compute variance
+    vec2 moments = texture(momentsTex, texCoord).rg;
+    float variance = max(1e-4, moments.y - moments.x*moments.x);
+
+    vec3 centerPos  = texture(gPosition, texCoordNoLight).xyz;
+    vec3 centerNorm = normalize(texture(gNormal, texCoordNoLight).xyz);
+
+    float sumVal = 0.0;
+    float sumWeight = 0.0;
+
+    // 5×5 a trous kernel
+    for(int yy = -FILTER_RADIUS; yy <= FILTER_RADIUS; ++yy){
+        for(int xx = -FILTER_RADIUS; xx <= FILTER_RADIUS; ++xx){
+            // stepWidth = 1 << filter_iteration
+            const ivec2 samplePix = pixel + ivec2(xx, yy) * stepWidth;
+
+            // skip anything out of bounds
+            if (samplePix.x < 0 || samplePix.y < 0 || samplePix.x >= dims.x || samplePix.y >= dims.y)
+                continue;
+
+            vec2 sampleTexCoordNoLight = (vec2(samplePix) + 0.5f) / vec2(dims.x, dims.y);
+            vec3 sampleTexCoord = vec3(sampleTexCoordNoLight, lightIndex);
+
+            // fetch neighbor value
+            float sampleVal = texture(inputVisibility, sampleTexCoord).r;
+
+            // fetch neighbor attributes
+            vec3 samplePos  = texture(gPosition, sampleTexCoordNoLight).xyz;
+            vec3 sampleNorm = normalize(texture(gNormal, sampleTexCoordNoLight).xyz);
+
+            // depth / distance weight
+            float dz = abs(centerPos.z - samplePos.z);
+            float sigmaZ = max(abs(centerPos.z), 1e-4) * stepWidth;
+            float wDepth = exp(-(dz / sigmaZ));
+
+            // normal weight
+            float wNormal = pow(clamp(dot(sampleNorm, centerNorm), 0.0f, 1.0f), phiNormal);
+
+            // color / visibility weight (variance aware)
+            float diff = sampleVal - centerVal;
+            float sigmaColor = phiColor;
+            float wColor = exp(-(diff*diff) / (2.0 * sigmaColor*sigmaColor));
+
+            // combine all weights
+            float w = wDepth * wNormal * wColor;
+
+            sumVal += sampleVal * w;
+            sumWeight += w;
+        }
+    }
+
+    float outVal = sumVal / max(sumWeight, 1e-5);
+    imageStore(outputVisibility, ivec3(pixel, lightIndex), vec4(outVal));
+}

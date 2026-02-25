@@ -33,6 +33,7 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 // settings
 bool firstMouse{ true };
 bool firstRenderPass{ true };
+bool firstFrame{ true };
 Settings::RenderSettings renderSettings{};
 
 // timing
@@ -79,6 +80,8 @@ int main() {
     Shader shaderLightingPass{ "deferred_shading.vert", "deferred_shading.frag" };
     Shader shaderLightBox{ "deferred_light.vert", "deferred_light.frag" };
     Shader rayTraceShader{ "ray_trace.comp" };
+    Shader temporalAccumulationShader{ "temporal_accumulation.comp" };
+    Shader spatialFilteringShader{ "spatial_filtering.comp" };
 
     // Object positions
     std::vector<glm::vec3> objectPositions{};
@@ -162,10 +165,11 @@ int main() {
     unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
     unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
     unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
+    unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
 
-    rayTraceShader.use();
+    /*rayTraceShader.use();
     rayTraceShader.setInt("gPosition", 0);
-    rayTraceShader.setInt("gNormal", 1);
+    rayTraceShader.setInt("gNormal", 1);*/
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -176,8 +180,8 @@ int main() {
     glGenFramebuffers(1, &gBuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
 
-    // G-Buffer keeps track of positions, normals, albedo, and specular intensity
-    unsigned int gPosition{}, gNormal{}, gAlbedoSpec{};
+    // G-Buffer keeps track of positions, normals, albedo, specular intensity, and motion/depth information
+    unsigned int gPosition{}, gNormal{}, gAlbedoSpec{}, gMotionDepthVec{};
 
     // Position color buffer
     glGenTextures(1, &gPosition);
@@ -203,11 +207,19 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
 
-    // All 3 should be color attachments
-    unsigned int attachments[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+    // Motion Vector Texture
+    glGenTextures(1, &gMotionDepthVec);
+    glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gMotionDepthVec, 0);
+
+    // All 4 should be color attachments
+    unsigned int attachments[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
     
-    // Output from our fragment shader will be written into the 3 buffers
-    glDrawBuffers(3, attachments);
+    // Output from our fragment shader will be written into the 4 buffers
+    glDrawBuffers(4, attachments);
 
     // create and attach depth buffer (renderbuffer)
     unsigned int rboDepth{};
@@ -221,14 +233,130 @@ int main() {
         PLOGE << "Framebuffer not complete!";
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    // We need to keep track of previous position and previous normal in order to implement SVGF
+    unsigned int prevPositionTex, prevNormalTex;
+
+    // Position
+    glGenTextures(1, &prevPositionTex);
+    glBindTexture(GL_TEXTURE_2D, prevPositionTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
+        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
+        0, GL_RGB, GL_FLOAT, NULL);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Normal
+    glGenTextures(1, &prevNormalTex);
+    glBindTexture(GL_TEXTURE_2D, prevNormalTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
+        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
+        0, GL_RGB, GL_FLOAT, NULL);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+
     // Create Ray Tracing Shadow Textures
     // We want to create multiple textures, since we need to understand the shadow created by EACH light source
     // E.g. we can't just say that if it's in the shadow of one light source then it's in shadow period, because
     // while it could be in the shadow of one light, it might be illuminated by another. 
-    GLuint gRayTracedShadowsArray;
+    unsigned int gRayTracedShadowsArray;
     glGenTextures(1, &gRayTracedShadowsArray);
     glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
     glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, Constants::NR_LIGHTS);
+
+    // Visibility History Array keeps track of 2 texture arrays which are used for the temporal part of SVGF
+    // Each texel of a texture keeps track of the accumulated shadow visibility up to the current frame for a light
+    // We need 2 in order to properly ping-pong
+    unsigned int visibilityHistoryArray[2];
+    glGenTextures(2, visibilityHistoryArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // History Length Array keeps track of 2 textures which are used for the temporal part of SVGF
+    // Each texel of the texture keeps track of the number of frames that have contributed to this pixel
+    // We need 2 in order to properly ping-pong
+    unsigned int historyLengthArray[2];
+    glGenTextures(2, historyLengthArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // Moments Array
+    unsigned int momentsArray[2];
+    glGenTextures(2, momentsArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_RG16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // Spatial Filtered Array
+    unsigned int spatialFilteredArray[2];
+    glGenTextures(2, spatialFilteredArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    // Variables used to index arrays for ping-ponging
+    // 'ping' should always be used as the previous and 'pong'
+    // should always be used as the current
+    int ping{ 0 }; // prev
+    int pong{ 1 }; // curr
 
     // setting up the lights
     std::vector<glm::vec3> lightPositions{};
@@ -254,13 +382,18 @@ int main() {
 
     
     lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
-    lightColors.emplace_back(0.0f, 1.0f, 0.45f);
+    lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
     shaderLightingPass.use();
     shaderLightingPass.setInt("gPosition", 0);
     shaderLightingPass.setInt("gNormal", 1);
     shaderLightingPass.setInt("gAlbedoSpec", 2);
     shaderLightingPass.setInt("shadowMaps", 3);
+
+    // The previous frames MVP matrices used for temporal accumulation
+    // glm::mat4 prevModel{ glm::mat4(1.0f) };
+    glm::mat4 prevView{ glm::mat4(1.0f) };
+    glm::mat4 prevProjection{ glm::mat4(1.0f) };
 
     // =================================================================================================
     // RENDER LOOP
@@ -281,18 +414,29 @@ int main() {
 
         Utility::setupImguiWindow(renderSettings);
 
-        // 1. geometry pass: render scene's geometry/color data into gbuffer
+        // geometry pass: render scene's geometry/color data into gbuffer
         glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glm::mat4 projection{ glm::perspective(glm::radians(renderSettings.camera.Zoom), static_cast<float>(Constants::SCR_WIDTH) / static_cast<float>(Constants::SCR_HEIGHT), 0.1f, 100.0f) };
-        glm::mat4 view = { renderSettings.camera.GetViewMatrix() };
-        glm::mat4 model = { glm::mat4(1.0f) };
+        glm::mat4 view { renderSettings.camera.GetViewMatrix() };
+        glm::mat4 model { glm::mat4(1.0f) };
+
+        if (firstFrame) {
+            // We'd like to avoid any big jumps on the first frame, so we just
+            // set it equal to the current MVP matrices
+            prevProjection = projection;
+            prevView = view;
+            //prevModel = model;
+        }
 
         shaderGeometryPass.use();
+        shaderGeometryPass.setVec3("CameraPosition", renderSettings.camera.Position);
         shaderGeometryPass.setMat4("projection", projection);
         shaderGeometryPass.setMat4("view", view);
+        shaderGeometryPass.setMat4("prevView", prevView);
+        shaderGeometryPass.setMat4("prevProjection", prevProjection);
 
         // bind diffuse map
         glActiveTexture(GL_TEXTURE0);
@@ -328,17 +472,26 @@ int main() {
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // 2. Ray Tracer Pass
+        prevView = view;
+        prevProjection = projection;
+
+        // Ray Tracer Pass
         for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
         {
             rayTraceShader.use();
 
             // bind G-buffer textures
-            glActiveTexture(GL_TEXTURE0);
+            glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, gPosition);
 
-            glActiveTexture(GL_TEXTURE1);
+            glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, gNormal);
+
+            // bind Blue Noise texture
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, blueNoise);
+
+            rayTraceShader.setInt("randomSeed", static_cast<int>(rand()));
 
             // send uniforms for only this light
             rayTraceShader.setVec3("light.Position", lightPositions[i]);
@@ -370,7 +523,153 @@ int main() {
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         }
 
-        // 3. lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
+        // Temporal Accumulation pass: Apply temporal SVGF
+        if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::temporal) {
+            for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
+            {
+                temporalAccumulationShader.use();
+
+                temporalAccumulationShader.setInt("lightIndex", i);
+                temporalAccumulationShader.setInt("maxHistory", 32);
+                temporalAccumulationShader.setBool("firstFrameBool", firstFrame);
+
+                // 0 — Raw noisy shadows
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
+
+                // 1 — Previous accumulated visibility
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[ping]);
+
+                // 2 — Previous history length
+                glActiveTexture(GL_TEXTURE2);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[ping]);
+
+                // 3 — Motion and depth information
+                glActiveTexture(GL_TEXTURE3);
+                glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
+
+                // 4 — Current frame positions (G-buffer)
+                glActiveTexture(GL_TEXTURE4);
+                glBindTexture(GL_TEXTURE_2D, gPosition);
+
+                // 5 — Current frame normals (G-buffer)
+                glActiveTexture(GL_TEXTURE5);
+                glBindTexture(GL_TEXTURE_2D, gNormal);
+
+                // 6 — Previous frame positions
+                glActiveTexture(GL_TEXTURE6);
+                glBindTexture(GL_TEXTURE_2D, prevPositionTex);
+
+                // 7 — Previous frame normals
+                glActiveTexture(GL_TEXTURE7);
+                glBindTexture(GL_TEXTURE_2D, prevNormalTex);
+
+                // 8 - Previous Moments
+                glActiveTexture(GL_TEXTURE8);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[ping]);
+
+                // ----------- OUTPUTS (image stores) -----------
+                // Remember, we want to write to Pong and read from Ping
+                
+                // 9 — Write new visibility
+                glBindImageTexture(
+                    9,
+                    visibilityHistoryArray[pong],
+                    0,
+                    GL_FALSE,
+                    i,
+                    GL_WRITE_ONLY,
+                    GL_R16F);
+
+                // 10 — Write new history length
+                glBindImageTexture(
+                    10,
+                    historyLengthArray[pong],
+                    0,
+                    GL_FALSE,
+                    i,
+                    GL_WRITE_ONLY,
+                    GL_R16F);
+
+                // 11 — Write new moments
+                glBindImageTexture(
+                    11,
+                    momentsArray[pong],
+                    0,
+                    GL_FALSE,
+                    i,
+                    GL_WRITE_ONLY,
+                    GL_RG16F);
+
+                temporalAccumulationShader.dispatch(
+                    (Constants::SCR_WIDTH + 16 - 1) / 16,
+                    (Constants::SCR_HEIGHT + 16 - 1) / 16
+                );
+
+                // make sure writes are visible before next light
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+            }
+        }
+        
+        // Spatial Filtering (SVGF A-Trous)
+        if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::spatial) {
+            for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
+            {
+                int readIndex = ping;
+                int writeIndex = pong;
+
+                for (int pass = 0; pass < 5; ++pass)
+                {
+                    spatialFilteringShader.use();
+
+                    int stepWidth = 1 << pass;
+
+                    spatialFilteringShader.setInt("lightIndex", i);
+                    spatialFilteringShader.setInt("stepWidth", stepWidth);
+                    spatialFilteringShader.setFloat("phiColor", 1.0f);
+                    spatialFilteringShader.setFloat("phiNormal", 32.0f);
+                    spatialFilteringShader.setFloat("phiDepth", 1.0f);
+
+                    // binding = 0
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D_ARRAY,
+                        (pass == 0) ? visibilityHistoryArray[pong]
+                        : spatialFilteredArray[readIndex]);
+
+                    // binding = 1
+                    glActiveTexture(GL_TEXTURE1);
+                    glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[pong]);
+
+                    // binding = 2
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_2D, gPosition);
+
+                    // binding = 3
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, gNormal);
+
+                    // binding = 4
+                    glBindImageTexture(4,
+                        spatialFilteredArray[writeIndex],
+                        0,
+                        GL_FALSE,
+                        i,
+                        GL_WRITE_ONLY,
+                        GL_R16F);
+
+                    spatialFilteringShader.dispatch(
+                        (Constants::SCR_WIDTH + 16 - 1) / 16,
+                        (Constants::SCR_HEIGHT + 16 - 1) / 16);
+
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+                    std::swap(readIndex, writeIndex);
+                }
+            }
+        }
+
+        // lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shaderLightingPass.use();
@@ -411,7 +710,15 @@ int main() {
 
             // bind ray tracer image
             glActiveTexture(GL_TEXTURE3);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
+
+            if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::off) {
+                glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
+            }
+            else if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::temporal) {
+                glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[ping]);
+            } else {
+                glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[ping]);
+            }
         }
 
         shaderLightingPass.setVec3("viewPos", renderSettings.camera.Position);
@@ -419,7 +726,7 @@ int main() {
         // finally render quad
         Utility::renderQuad();
 
-        // 3.5. copy content of geometry's depth buffer to default framebuffer's depth buffer
+        // copy content of geometry's depth buffer to default framebuffer's depth buffer
         glBindFramebuffer(GL_READ_FRAMEBUFFER, gBuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // write to default framebuffer
 
@@ -427,7 +734,7 @@ int main() {
         glBlitFramebuffer(0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, 0, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // 4. render lights on top of scene
+        // render lights on top of scene
         shaderLightBox.use();
         shaderLightBox.setMat4("projection", projection);
         shaderLightBox.setMat4("view", view);
@@ -442,6 +749,19 @@ int main() {
             Utility::renderCube();
         }
 
+        // Copy current position/normal information into previous textures
+        glCopyImageSubData(
+            gPosition, GL_TEXTURE_2D, 0, 0, 0, 0,
+            prevPositionTex, GL_TEXTURE_2D, 0, 0, 0, 0,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        glCopyImageSubData(
+            gNormal, GL_TEXTURE_2D, 0, 0, 0, 0,
+            prevNormalTex, GL_TEXTURE_2D, 0, 0, 0, 0,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        std::swap(ping, pong);
+
         // Render Dear ImGui Menu
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -453,7 +773,11 @@ int main() {
             PLOGD << "Num Triangles in Scene: " << gpuTriangles.size();
             firstRenderPass = false;
         }
-            
+
+        if (firstFrame) {
+            firstFrame = false;
+        }
+
     }
     PLOGD << "Render Loop Terminated";
 

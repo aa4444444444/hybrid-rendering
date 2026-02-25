@@ -120,6 +120,8 @@ namespace Utility {
             GLenum format;
             if (nrComponents == 1)
                 format = GL_RED;
+            else if (nrComponents == 2)
+                format = GL_RG;
             else if (nrComponents == 3)
                 format = GL_RGB;
             else if (nrComponents == 4)
@@ -134,6 +136,46 @@ namespace Utility {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glActiveTexture(GL_TEXTURE0);
+
+            stbi_image_free(data);
+        }
+        else
+        {
+            PLOGE << "Texture failed to load at path: " << path;
+            stbi_image_free(data);
+        }
+
+        return textureID;
+    }
+
+    unsigned int loadNoiseTexture(std::string_view path, int activeTextureUnit)
+    {
+        unsigned int textureID{};
+        glGenTextures(1, &textureID);
+
+        int width, height, nrComponents;
+        unsigned char* data = stbi_load(path.data(), &width, &height, &nrComponents, 0);
+        if (data)
+        {
+            GLenum format;
+            if (nrComponents == 1)
+                format = GL_RED;
+            else if (nrComponents == 2)
+                format = GL_RG;
+            else if (nrComponents == 3)
+                format = GL_RGB;
+            else if (nrComponents == 4)
+                format = GL_RGBA;
+
+            glActiveTexture(activeTextureUnit);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+            glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_FLOAT, data);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glActiveTexture(GL_TEXTURE0);
 
             stbi_image_free(data);
@@ -272,7 +314,7 @@ namespace Utility {
         /* ==============================================================================
         Deferred Shading Render Mode dropdown
         =============================================================================== */
-        const std::array<std::string, 5> deferredShadingRenderModes{
+        const std::array<std::string, 2> deferredShadingRenderModes{
             "Default",
             "Shadows",
         };
@@ -287,6 +329,32 @@ namespace Utility {
                     renderSettings.deferredShadingRenderMode = static_cast<Settings::DeferredShadingRenderMode>(i);
 
                 if (static_cast<int>(renderSettings.deferredShadingRenderMode) == i)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
+
+        /* ==============================================================================
+        SVGF Shading Render Mode dropdown
+        =============================================================================== */
+        const std::array<std::string, 4> svgfRenderModes{
+            "On",
+            "Temporal",
+            "Spatial",
+            "Off"
+        };
+
+        const std::string svgfRenderModePreview{ svgfRenderModes[static_cast<int>(renderSettings.svgfRenderMode)] };
+
+        if (ImGui::BeginCombo("SVGF Render Mode", svgfRenderModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::SVGFRenderMode::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.svgfRenderMode) == i };
+
+                if (ImGui::Selectable(svgfRenderModes[i].c_str(), is_selected))
+                    renderSettings.svgfRenderMode = static_cast<Settings::SVGFRenderMode>(i);
+
+                if (static_cast<int>(renderSettings.svgfRenderMode) == i)
                     ImGui::SetItemDefaultFocus();
             }
 

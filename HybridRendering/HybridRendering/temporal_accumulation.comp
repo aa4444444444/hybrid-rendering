@@ -1,0 +1,124 @@
+#version 460 core
+
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Raw ray traced shadows (noisy)
+layout(binding = 0) uniform sampler2DArray visibilityRaw;
+
+// Previous accumulated visibility
+layout(binding = 1) uniform sampler2DArray visibilityHistoryPrev;
+
+// Previous history length
+layout(binding = 2) uniform sampler2DArray historyLengthPrev;
+
+layout(binding = 3) uniform sampler2D motionVectors;
+
+layout (binding = 4) uniform sampler2D gPosition;
+layout (binding = 5) uniform sampler2D gNormal;
+
+layout(binding = 6) uniform sampler2D prevPosition;
+layout(binding = 7) uniform sampler2D prevNormal;
+
+layout(binding = 8) uniform sampler2DArray prevMoments;
+
+layout(r16f, binding = 9) writeonly uniform image2DArray visibilityHistoryOut;
+layout(r16f, binding = 10) writeonly uniform image2DArray historyLengthOut;
+layout(rg16f, binding = 11) writeonly uniform image2DArray momentsOut;
+
+uniform int lightIndex;
+uniform int maxHistory;
+uniform bool firstFrameBool;
+
+// Disocclusion thresholds
+const float PLANE_DISTANCE_THRESHOLD = 0.2f;
+const float NORMAL_DISTANCE_THRESHOLD = 0.9f;
+
+// https://diharaw.github.io/post/adventures_in_hybrid_rendering/
+bool isReprojectionValid(vec3 currentPos, vec3 currentNormal, vec3 prevPos, vec3 prevNormal) {
+    // Plane distance check
+    vec3 toCurrent = currentPos - prevPos;
+    float distToPlane = abs(dot(toCurrent, currentNormal));
+    if (distToPlane <= PLANE_DISTANCE_THRESHOLD)
+        return false;
+
+    
+    // Normal check
+    if(pow(abs(dot(currentNormal, prevNormal)), 2) > NORMAL_DISTANCE_THRESHOLD)
+        return false;
+
+    return true;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec3 dims = imageSize(visibilityHistoryOut);
+    if (pixel.x >= dims.x || pixel.y >= dims.y)
+        return;
+
+    // The version without light is needed to sample 2D Textures 
+    // The version with light is needed to sample 2D Texture Arrays
+    vec2 texCoordNoLight = (vec2(pixel) + 0.5f) / vec2(dims.x, dims.y);
+    vec3 texCoord = vec3(texCoordNoLight, lightIndex);
+
+    // Fetch the current sample
+    vec4 currentSample = texture(visibilityRaw, texCoord);
+
+    // Get the motion vector for the current pixel
+    vec2 motionVector = texture(motionVectors, texCoordNoLight).rg;
+
+    // Compute the history coordinate 
+    vec2 historyCoordNoLight = texCoordNoLight + motionVector;
+    vec3 historyCoord = vec3(historyCoordNoLight, lightIndex);
+
+    // Initialize the output to the current sample in case reprojection fails
+    vec4 outputVisibility = currentSample;
+
+    vec2 updatedMoments = vec2(currentSample.r, currentSample.r * currentSample.r);;
+
+    if(firstFrameBool) {
+        imageStore(visibilityHistoryOut, ivec3(pixel, lightIndex), outputVisibility);
+        imageStore(historyLengthOut, ivec3(pixel, lightIndex), vec4(1));
+
+        // first frame: moments = (mean, mean^2)
+        imageStore(momentsOut, ivec3(pixel, lightIndex), vec4(updatedMoments, 0.0f, 0.0f));
+        return;
+    }
+
+    // Initialize history length, which is the number of frames that the sample has been accumulated over
+    float historyLength = 1.0f;
+
+    // Retrieve the current and previous positions/normals to do disocclusion checks 
+    vec3 currentPos = texture(gPosition, texCoordNoLight).xyz;
+    vec3 currentNormal = normalize(texture(gNormal, texCoordNoLight).xyz);
+    vec3 previousPos = texture(prevPosition, historyCoordNoLight).xyz;
+    vec3 previousNormal = normalize(texture(prevNormal, historyCoordNoLight).xyz);
+    
+    // Check if the history sample is valid
+    if(isReprojectionValid(currentPos, currentNormal, previousPos, previousNormal)) {
+        // Fetch history sample
+        vec4 historySample = texture(visibilityHistoryPrev, historyCoord);
+
+        // Fetch the length of the history sample and increment by 1 since the sample will be accumulated
+        historyLength = texture(historyLengthPrev, historyCoord).r;
+        historyLength = min(historyLength + 1.0f, float(maxHistory));
+
+        // Compute the alpha value which will be used to determine how much of the history sample will be used
+        float alpha = 1.0f / historyLength;
+
+        vec2 previousMoments = texture(prevMoments, historyCoord).rg;
+
+        // first moment (mean)
+        float m1 = mix(historySample.r, currentSample.r, alpha);
+
+        // second moment (mean of squares)
+        float m2 = mix(previousMoments.g, currentSample.r * currentSample.r, alpha);
+
+        // Accumulate the sample
+        outputVisibility = mix(historySample, currentSample, alpha);
+    }
+
+    imageStore(visibilityHistoryOut, ivec3(pixel, lightIndex), outputVisibility);
+    imageStore(historyLengthOut, ivec3(pixel, lightIndex), vec4(historyLength));
+    imageStore(momentsOut, ivec3(pixel, lightIndex), vec4(updatedMoments, 0.0f, 0.0f));
+}

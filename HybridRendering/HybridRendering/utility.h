@@ -16,6 +16,8 @@ namespace Utility {
 
 	unsigned int loadTexture(std::string_view path, int activeTextureUnit);
 
+    unsigned int loadNoiseTexture(std::string_view path, int activeTextureUnit);
+
 	void renderCube();
 
 	void renderFloor();

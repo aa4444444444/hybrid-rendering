@@ -2,11 +2,13 @@
 layout (location = 0) out vec3 gPosition;
 layout (location = 1) out vec3 gNormal;
 layout (location = 2) out vec4 gAlbedoSpec;
-layout (location = 3) out uint FragObjectID;
+layout (location = 3) out vec4 FragMotionVec;
 
 in vec2 TexCoords;
 in vec3 FragPos;
 in vec3 Normal;
+in vec4 CurrClipPos;
+in vec4 PrevClipPos;
 
 // How/What we want to render
 // 0 ==> Texture diffuse/specular
@@ -16,8 +18,23 @@ in vec3 Normal;
 // 4 ==> Specular
 uniform int renderingMode;
 
+uniform vec3 CameraPosition;
+
 uniform sampler2D texture_diffuse1;
 uniform sampler2D texture_specular1;
+
+vec2 computeMotionVec(vec4 prevPos, vec4 currPos) {
+    vec2 current = (currPos.xy / currPos.w);
+    vec2 previous = (prevPos.xy / prevPos.w);
+    // Now [-1,1]
+
+    current = current * 0.5 + 0.5;
+    previous = previous * 0.5 + 0.5;
+    // Now [0, 1]
+
+    // Calculate velocity (current -> previous)
+    return (previous - current);
+}
 
 void main()
 {    
@@ -43,4 +60,12 @@ void main()
         gAlbedoSpec.a = texture(texture_specular1, TexCoords).r;
     }
     
+    
+
+    float Depth = distance(CameraPosition, FragPos);
+    float DepthDerivative = max(abs(dFdx(Depth)), abs(dFdy(Depth)));
+
+    // also store the motion / depth vector
+    vec2 motion = computeMotionVec(PrevClipPos, CurrClipPos);
+    FragMotionVec = vec4(motion, Depth, DepthDerivative);
 }

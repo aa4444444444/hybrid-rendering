@@ -173,6 +173,8 @@
     <None Include="gbuffer.frag" />
     <None Include="gbuffer.vert" />
     <None Include="ray_trace.comp" />
+    <None Include="spatial_filtering.comp" />
+    <None Include="temporal_accumulation.comp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
