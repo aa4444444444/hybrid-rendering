@@ -361,6 +361,30 @@ namespace Utility {
             ImGui::EndCombo();
         }
 
+        /* ==============================================================================
+        BVH Render Mode dropdown
+        =============================================================================== */
+        const std::array<std::string, 2> bvhRenderModes{
+            "Off",
+            "On"
+        };
+
+        const std::string bvhRenderModePreview{ bvhRenderModes[static_cast<int>(renderSettings.bvhRenderMode)] };
+
+        if (ImGui::BeginCombo("BVH Render Mode", bvhRenderModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::BVHRenderMode::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.bvhRenderMode) == i };
+
+                if (ImGui::Selectable(bvhRenderModes[i].c_str(), is_selected))
+                    renderSettings.bvhRenderMode = static_cast<Settings::BVHRenderMode>(i);
+
+                if (static_cast<int>(renderSettings.bvhRenderMode) == i)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
+
         ImGui::End();
     }
 }

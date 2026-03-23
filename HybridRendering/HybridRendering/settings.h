@@ -15,7 +15,7 @@ namespace Settings {
 		normals, // 2
 		albedo, // 3
 		spec, // 4
-		num_options, // 5
+		num_options,
 	};
 
 	/*
@@ -39,12 +39,22 @@ namespace Settings {
 	};
 
 	/*
+		Whether to use BVH
+	*/
+	enum class BVHRenderMode {
+		off, // 0
+		on, // 1
+		num_options
+	};
+
+	/*
 		Defines various render settings
 	*/
 	struct RenderSettings {
 		GBufferRenderMode gBufferRenderMode { GBufferRenderMode::texture };
 		DeferredShadingRenderMode deferredShadingRenderMode { DeferredShadingRenderMode::texture };
 		SVGFRenderMode svgfRenderMode{ SVGFRenderMode::on };
+		BVHRenderMode bvhRenderMode{ BVHRenderMode::on };
 		bool enableMouseLook{ false };
 
 		Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };

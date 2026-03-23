@@ -112,6 +112,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>imgui;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -129,6 +130,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>imgui;</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -159,9 +161,12 @@
     <ClInclude Include="imgui\imstb_rectpack.h" />
     <ClInclude Include="imgui\imstb_textedit.h" />
     <ClInclude Include="imgui\imstb_truetype.h" />
+    <ClInclude Include="mesh.h" />
+    <ClInclude Include="model.h" />
     <ClInclude Include="settings.h" />
     <ClInclude Include="shader.h" />
     <ClInclude Include="stb_image.h" />
+    <ClInclude Include="tiny_bvh.h" />
     <ClInclude Include="triangle_gpu.h" />
     <ClInclude Include="utility.h" />
   </ItemGroup>

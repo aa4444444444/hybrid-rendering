@@ -12,6 +12,8 @@ struct TriangleGPU {
 	uint32_t id;
 	uint32_t padding[3]; // pad to 16-byte multiple
 
+    TriangleGPU() = default;
+
     TriangleGPU(
         const glm::vec4& _v0,
         const glm::vec4& _v1,

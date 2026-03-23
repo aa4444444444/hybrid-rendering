@@ -1,6 +1,10 @@
 #version 460 core
+
 #define M_PI 3.1415926538
 #define M_SAMPLES 1
+
+// Stack depth for iterative BVH traversal.
+#define BVH_STACK_SIZE 64
 
 layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout (r16f, binding = 0) writeonly uniform image2D shadowImage;
@@ -44,6 +48,20 @@ struct Triangle {
 layout(std430, binding = 3) buffer Triangles {
     Triangle tris[];
 };
+
+// Bounding Volume Hierarchy
+struct BVHNode {
+    vec4 lminLeft;   // xyz = left child aabbMin, w = left  child index
+    vec4 lmaxRight;  // xyz = left child aabbMax, w = right child index
+    vec4 rminCount;  // xyz = right child aabbMin, w = triCount
+    vec4 rmaxFirst;  // xyz = right child aabbMax, w = firstTri
+};
+
+layout(std430, binding = 4) buffer BVHNodes {
+    BVHNode bvhNodes[];
+};
+
+uniform bool useBVH;
 
 // Uniformly sampling positions on a sphere's surface 
 // We use this to implement Area Lights by treating each 
@@ -127,6 +145,77 @@ bool intersectTriangle(
     return (t > 1e-6 && t < maxDist);
 }
 
+// https://en.wikipedia.org/wiki/Slab_method
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, float maxDist, out float tEnter) {
+    vec3  t0 = (bmin - ro) * invRd;
+    vec3  t1 = (bmax - ro) * invRd;
+    vec3  tMin = min(t0, t1);
+    vec3  tMax = max(t0, t1);
+    // tEnter is the distance along the ray at which it enters the box
+    tEnter = max(max(tMin.x, tMin.y), tMin.z);
+    float tExit = min(min(tMax.x, tMax.y), tMax.z);
+    return (tExit >= max(tEnter, 0.0)) && (tEnter < maxDist);
+}
+
+// Traverses the BVH
+// Taken from the Aila and Laine paper 
+bool traverseBVH(vec3 origin, vec3 dir, float maxDist) {
+    vec3 invDir = 1.0 / dir;
+
+    int stack[BVH_STACK_SIZE];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0; // push root
+
+    while (stackPtr > 0) {
+        BVHNode node = bvhNodes[stack[--stackPtr]];
+
+        // Unpack the uint fields stored in the .w components
+        uint left = floatBitsToUint(node.lminLeft.w);
+        uint right = floatBitsToUint(node.lmaxRight.w);
+        uint triCount = floatBitsToUint(node.rminCount.w);
+        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
+
+        // Leaf: test each triangle in the node
+        if (triCount > 0u) {
+            for (uint i = firstTri; i < firstTri + triCount; ++i) {
+                if (intersectTriangle(origin, dir, tris[i], maxDist))
+                    return true;
+            }
+        } else {
+            // Internal node: test both child AABBs
+            // Both AABBs come from the single node we already loaded (Aila and Laine) no extra memory fetch needed.
+            // https://research.nvidia.com/sites/default/files/pubs/2009-08_Understanding-the-Efficiency/aila2009hpg_paper.pdf
+            float tLeft, tRight;
+            bool hitLeft = intersectAABB(origin, invDir, node.lminLeft.xyz, node.lmaxRight.xyz, maxDist, tLeft);
+            bool hitRight = intersectAABB(origin, invDir, node.rminCount.xyz, node.rmaxFirst.xyz, maxDist, tRight);
+
+            // Visiting the closer child first improves early-out frequency, since earlier we stop as soon as we find the first intersection.
+            // Push the farther child first so the closer one sits on top of the stack
+            if (hitLeft && hitRight) {
+                if (tLeft < tRight) {
+                    if (stackPtr < BVH_STACK_SIZE) 
+                        stack[stackPtr++] = int(right);
+                    if (stackPtr < BVH_STACK_SIZE) 
+                        stack[stackPtr++] = int(left);
+                } else {
+                    if (stackPtr < BVH_STACK_SIZE) 
+                        stack[stackPtr++] = int(left);
+                    if (stackPtr < BVH_STACK_SIZE) 
+                        stack[stackPtr++] = int(right);
+                }
+            } else if (hitLeft) {
+                if (stackPtr < BVH_STACK_SIZE) 
+                    stack[stackPtr++] = int(left);
+            } else if (hitRight) {
+                if (stackPtr < BVH_STACK_SIZE) 
+                    stack[stackPtr++] = int(right);
+            }
+        }
+    }
+
+    return false;
+}
+
 void main(){
 	// https://www.youtube.com/watch?v=nF4X9BIUzx0
 	ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -167,55 +256,75 @@ void main(){
     // determine how "soft" of a shadow the pixel should have. 
     int numVisibleSamples = 0;
 
-    for (int i = 0; i < M_SAMPLES; ++i){
-        vec2 rand = blueNoise(pixelCoords, randomSeed);
-        vec3 sampleLightPos = sampleSphere(rand);
+    if(useBVH) {
+        for (int i = 0; i < M_SAMPLES; ++i) {
+            vec2 rand = blueNoise(pixelCoords, randomSeed);
+            vec3 sampleLightPos = sampleSphere(rand);
 
-        // Ray origin is at the surface of the object
-        vec3 origin = objectWorldPos + objectWorldNormal * 0.01; // Slight offset to avoid self-intersections
+            // Offset origin along the normal to avoid self-intersection.
+            vec3  origin = objectWorldPos + objectWorldNormal * 0.01;
+            vec3  toLight = sampleLightPos - origin;
+            float toLightMagnitude = length(toLight);
 
-        // Vector from the origin to the light source
-        vec3 toLight = sampleLightPos - origin; 
+            if (toLightMagnitude > light.MaxDistance) {
+                ++numVisibleSamples;
+                continue;
+            }
 
-        // Magnitude of the toLight vector
-        float toLightMagnitude = length(toLight);
+            vec3 toLightDir = normalize(toLight);
 
-        // If the distance to the light source is greater than the light's radius, 
-        // it should not be in shadow
-        if (toLightMagnitude > light.MaxDistance) {
-            // imageStore(shadowImage, pixelCoords, vec4(1.0));
-            // return;
-            ++numVisibleSamples;
-            continue;
+            if (!traverseBVH(origin, toLightDir, toLightMagnitude))
+                ++numVisibleSamples;
         }
+    } else {
+        for (int i = 0; i < M_SAMPLES; ++i){
+            vec2 rand = blueNoise(pixelCoords, randomSeed);
+            vec3 sampleLightPos = sampleSphere(rand);
 
-        // Direction of the toLight vector
-        vec3 tolightDir = normalize(toLight);
+            // Ray origin is at the surface of the object
+            vec3 origin = objectWorldPos + objectWorldNormal * 0.01; // Slight offset to avoid self-intersections
+
+            // Vector from the origin to the light source
+            vec3 toLight = sampleLightPos - origin; 
+
+            // Magnitude of the toLight vector
+            float toLightMagnitude = length(toLight);
+
+            // If the distance to the light source is greater than the light's radius, 
+            // it should not be in shadow
+            if (toLightMagnitude > light.MaxDistance) {
+                // imageStore(shadowImage, pixelCoords, vec4(1.0));
+                // return;
+                ++numVisibleSamples;
+                continue;
+            }
+
+            // Direction of the toLight vector
+            vec3 tolightDir = normalize(toLight);
     
-        // By default we say the shadow is not occluded, i.e. not in shadow
-        bool occluded = false;
+            // By default we say the shadow is not occluded, i.e. not in shadow
+            bool occluded = false;
 
-        // Trace shadow ray
-        for (int j = 0; j < tris.length(); ++j)
-        {
-            Triangle tri = tris[j];
+            // Trace shadow ray
+            for (int j = 0; j < tris.length(); ++j)
+            {
+                Triangle tri = tris[j];
 
-            if (intersectTriangle(origin, tolightDir, tri, toLightMagnitude)) {
-                // shadow = 0.0f;
-                // break;
-                occluded = true;
-                break; // breaks out of inner for loop over triangles
+                if (intersectTriangle(origin, tolightDir, tri, toLightMagnitude)) {
+                    // shadow = 0.0f;
+                    // break;
+                    occluded = true;
+                    break; // breaks out of inner for loop over triangles
+                }
+            }
+
+            if (!occluded) {
+                ++numVisibleSamples;
             }
         }
-
-        if (!occluded) {
-            ++numVisibleSamples;
-        }
-    } 
-
-    // Calculate how much is in shadow between 0 (all shadow) and 1 (no shadow) 
-    float inShadow = float(numVisibleSamples) / float(M_SAMPLES);
-
-    imageStore(shadowImage, pixelCoords, vec4(inShadow));
+    }
     
+
+    float visibility = float(numVisibleSamples) / float(M_SAMPLES);
+    imageStore(shadowImage, pixelCoords, vec4(visibility));
 }

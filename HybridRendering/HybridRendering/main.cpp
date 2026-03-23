@@ -17,7 +17,6 @@
 #include <plog/Formatters/TxtFormatter.h>
 #include "plog/Initializers/ConsoleInitializer.h"
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 #include "constants.h"
 #include "camera.h"
@@ -25,6 +24,9 @@
 #include "settings.h"
 #include "utility.h"
 #include "triangle_gpu.h"
+#define TINYBVH_IMPLEMENTATION
+#include "tiny_bvh.h"
+#include "model.h"
 
 // forward declarations
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -83,6 +85,11 @@ int main() {
     Shader temporalAccumulationShader{ "temporal_accumulation.comp" };
     Shader spatialFilteringShader{ "spatial_filtering.comp" };
 
+    // Load the backpack model
+    PLOGD << "Loading backpack model"; 
+    Model backpackModel("resources/objects/backpack/backpack.obj");
+    PLOGD << "Model loaded: " << backpackModel.meshes.size() << " mesh(es)";
+
     // Object positions
     std::vector<glm::vec3> objectPositions{};
     objectPositions.emplace_back(-3.0, -0.5, -3.0);
@@ -100,7 +107,7 @@ int main() {
     for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
         glm::mat4 model{ glm::mat4(1.0f) }; 
         model = glm::translate(model, objectPositions[i]);
-        model = glm::scale(model, glm::vec3(0.7f));
+        model = glm::scale(model, glm::vec3(0.3f));
         
         
         objectTransforms.push_back(model);
@@ -115,49 +122,123 @@ int main() {
     // Contains the triangles in the scene that will get passed to the GPU in an SSBO
     std::vector<TriangleGPU> gpuTriangles{};
 
-    // Populating the gpuTriangles vector
-    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
-    {
-        glm::mat4 normalModel{ glm::transpose(glm::inverse(glm::mat3(objectTransforms[i]))) };
+    // bvhvec4 triples that TinyBVH's builder consumes. 
+    // Triangle i in gpuTriangles corresponds to vertices [i*3 ... i*3+2] in bvhVerts
+    // After the BVH build, TinyBVH provides a primIdx[] remapping array.
+    // We use it to reorder gpuTriangles into sortedTriangles so that the triangle SSBO is in the order the BVH nodes expect.
+    std::vector<tinybvh::bvhvec4> bvhVerts{};
 
-        // Since each point has 8 elements and we want 3 points per triangle
+    // Lambda function that pushes a triangle to both gpuTriangles and bvhVerts
+    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, uint32_t id)
+    {
+        gpuTriangles.emplace_back(v0, v1, v2, normal, id);
+        bvhVerts.push_back({ v0.x, v0.y, v0.z, 0.0f });
+        bvhVerts.push_back({ v1.x, v1.y, v1.z, 0.0f });
+        bvhVerts.push_back({ v2.x, v2.y, v2.z, 0.0f });
+    };
+
+    // Backpacks
+    for (unsigned int inst = 0; inst < objectPositions.size(); ++inst)
+    {
+        const glm::mat4& M = objectTransforms[inst];
+        glm::mat4 normalM = glm::transpose(glm::inverse(glm::mat3(M)));
+
+        for (const Mesh& mesh : backpackModel.meshes)
+        {
+            const auto& verts = mesh.vertices;
+            const auto& idxList = mesh.indices;
+
+            for (size_t f = 0; f < idxList.size(); f += 3)
+            {
+                const Vertex& a = verts[idxList[f]];
+                const Vertex& b = verts[idxList[f + 1]];
+                const Vertex& c = verts[idxList[f + 2]];
+
+                glm::vec4 wv0 = M * glm::vec4(a.Position, 1.0f);
+                glm::vec4 wv1 = M * glm::vec4(b.Position, 1.0f);
+                glm::vec4 wv2 = M * glm::vec4(c.Position, 1.0f);
+                glm::vec4 wN = glm::normalize(normalM * glm::vec4(a.Normal, 0.0f));
+
+                pushTriangle(wv0, wv1, wv2, wN, ++nextID);
+            }
+        }
+    }
+
+    /*
+    // Boxes
+    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
+        glm::mat4 normalModel{ glm::transpose(glm::inverse(glm::mat3(objectTransforms[i]))) };
         for (unsigned int j{ 0 }; j < Utility::cubeVertices.size(); j += (8 * 3)) {
-            gpuTriangles.emplace_back(
-                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j], Utility::cubeVertices[j + 1], Utility::cubeVertices[j + 2], 1.0f },
-                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 8], Utility::cubeVertices[j + 9], Utility::cubeVertices[j + 10], 1.0f },
+            pushTriangle(
+                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j],    Utility::cubeVertices[j + 1],  Utility::cubeVertices[j + 2],  1.0f },
+                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 8],  Utility::cubeVertices[j + 9],  Utility::cubeVertices[j + 10], 1.0f },
                 objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 16], Utility::cubeVertices[j + 17], Utility::cubeVertices[j + 18], 1.0f },
-                glm::normalize(normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 0.0f }), // normal
+                glm::normalize(normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 0.0f }),
                 nextID++
             );
         }
     }
+    */
 
+    // Floor
     glm::mat4 floorNormalModel{ glm::transpose(glm::inverse(glm::mat3(floorModel))) };
-
-    // Since each point has 8 elements and we want 3 points per triangle
     for (unsigned int j{ 0 }; j < Utility::floorVertices.size(); j += (8 * 3)) {
-        gpuTriangles.emplace_back(
-            floorModel * glm::vec4{ Utility::floorVertices[j], Utility::floorVertices[j + 1], Utility::floorVertices[j + 2], 1.0f },
+        pushTriangle(
+            floorModel * glm::vec4{ Utility::floorVertices[j], Utility::floorVertices[j + 1], Utility::floorVertices[j + 2],  1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 8], Utility::floorVertices[j + 9], Utility::floorVertices[j + 10], 1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
-            glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }), // normal
-            nextID++
+            glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }),
+            ++nextID
         );
     }
 
-    /*for (const TriangleGPU& triangle : gpuTriangles) {
-        PLOGD << "TRIANGLE:";
-        PLOGD << "v0: " << glm::to_string(triangle.v0);
-        PLOGD << "v1: " << glm::to_string(triangle.v1);
-        PLOGD << "v2: " << glm::to_string(triangle.v2);
-        PLOGD << "normal: " << glm::to_string(triangle.normal);
-    }*/
+    const uint32_t triCount = static_cast<uint32_t>(gpuTriangles.size());
 
-    // Set up triangle SSBO
+    // TinyBVH uses BVH_GPU layout (Aila & Laine 2009)
+    // https://research.nvidia.com/sites/default/files/pubs/2009-08_Understanding-the-Efficiency/aila2009hpg_paper.pdf
+    //
+    // BVH_GPU::BVHNode is 64 bytes and stores both children's AABBs in the
+    // parent node, eliminating one memory fetch per node visit during GPU
+    // traversal.
+    //
+    // gpuBVH.bvhNode is a pointer to the flat node array which is what we upload to SSBO
+    // gpuBVH.usedNodes is the number of valid entries in bvhNode[]
+    // gpuBVH.bvh.primIdx maps BVH-order index back to the original triangle index in gpuTriangles bvhVerts.  
+    // We use this to reorder the triangle SSBO.
+    PLOGD << "Building BVH (TinyBVH BVH_GPU) over " << triCount << " triangles";
+
+    tinybvh::BVH_GPU gpuBVH;
+    gpuBVH.Build(bvhVerts.data(), triCount);
+
+    PLOGD << "BVH built: " << gpuBVH.usedNodes << " nodes";
+
+    // Reorder gpuTriangles to match the BVH's internal primitive order.
+    // The shader indexes into the triangle SSBO using leaf.firstTri, which refers to positions in this BVH-reordered array.
+    std::vector<TriangleGPU> sortedTriangles(triCount);
+    for (uint32_t i = 0; i < triCount; ++i) {
+        sortedTriangles[i] = gpuTriangles[gpuBVH.bvh.primIdx[i]];
+    }
+
+    // Upload triangle SSBO
     unsigned int triangleSSBO{};
     glGenBuffers(1, &triangleSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, triangleSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, gpuTriangles.size() * sizeof(TriangleGPU), gpuTriangles.data(), GL_STATIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        sortedTriangles.size() * sizeof(TriangleGPU),
+        sortedTriangles.data(),
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, triangleSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Upload BVH node SSBO
+    unsigned int bvhSSBO{};
+    glGenBuffers(1, &bvhSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bvhSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        gpuBVH.usedNodes * sizeof(tinybvh::BVH_GPU::BVHNode),
+        gpuBVH.bvhNode,
+        GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, bvhSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // load textures
@@ -166,10 +247,6 @@ int main() {
     unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
     unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
     unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
-
-    /*rayTraceShader.use();
-    rayTraceShader.setInt("gPosition", 0);
-    rayTraceShader.setInt("gNormal", 1);*/
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -379,7 +456,6 @@ int main() {
         lightColors.emplace_back(rColor, gColor, bColor);
     }
     */
-
     
     lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
     lightColors.emplace_back(1.0f, 1.0f, 1.0f);
@@ -454,7 +530,8 @@ int main() {
         {
             shaderGeometryPass.setMat4("model", objectTransforms[i]);
 
-            Utility::renderCube();
+            //Utility::renderCube();
+            backpackModel.Draw(shaderGeometryPass);
         }
 
         // Drawing the floor
@@ -491,6 +568,7 @@ int main() {
             glActiveTexture(GL_TEXTURE3);
             glBindTexture(GL_TEXTURE_2D, blueNoise);
 
+            rayTraceShader.setBool("useBVH", static_cast<bool>(renderSettings.bvhRenderMode));
             rayTraceShader.setInt("randomSeed", static_cast<int>(rand()));
 
             // send uniforms for only this light
