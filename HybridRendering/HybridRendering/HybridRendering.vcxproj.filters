@@ -107,6 +107,9 @@
     <ClInclude Include="model.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="material_gpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="gbuffer.frag">
@@ -124,7 +127,7 @@
     <None Include="deferred_light.frag">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="ray_trace.comp">
+    <None Include="ray_trace_shadow.comp">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="temporal_accumulation.comp">

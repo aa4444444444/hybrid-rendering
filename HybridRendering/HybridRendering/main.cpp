@@ -24,6 +24,7 @@
 #include "settings.h"
 #include "utility.h"
 #include "triangle_gpu.h"
+#include "material_gpu.h"
 #define TINYBVH_IMPLEMENTATION
 #include "tiny_bvh.h"
 #include "model.h"
@@ -43,7 +44,11 @@ float deltaTime{ 0.0f };
 float lastFrame{ 0.0f };
 
 // Object id counter
-static uint32_t nextID = 0;
+static uint32_t nextID{ 0 };
+
+// Material IDs
+constexpr uint32_t MAT_BACKPACK{ 0 };
+constexpr uint32_t MAT_FLOOR{ 1 };
 
 int main() {
     plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
@@ -81,7 +86,7 @@ int main() {
     Shader shaderGeometryPass{ "gbuffer.vert", "gbuffer.frag" };
     Shader shaderLightingPass{ "deferred_shading.vert", "deferred_shading.frag" };
     Shader shaderLightBox{ "deferred_light.vert", "deferred_light.frag" };
-    Shader rayTraceShader{ "ray_trace.comp" };
+    Shader rayTraceShadowShader{ "ray_trace_shadow.comp" };
     Shader temporalAccumulationShader{ "temporal_accumulation.comp" };
     Shader spatialFilteringShader{ "spatial_filtering.comp" };
 
@@ -118,7 +123,6 @@ int main() {
     floorModel = glm::translate(floorModel, glm::vec3{ 0.0f, -1.5f, 0.0f });
     floorModel = glm::scale(floorModel, glm::vec3(5.0f));
     
-
     // Contains the triangles in the scene that will get passed to the GPU in an SSBO
     std::vector<TriangleGPU> gpuTriangles{};
 
@@ -129,9 +133,9 @@ int main() {
     std::vector<tinybvh::bvhvec4> bvhVerts{};
 
     // Lambda function that pushes a triangle to both gpuTriangles and bvhVerts
-    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, uint32_t id)
+    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, uint32_t id, uint32_t materialID)
     {
-        gpuTriangles.emplace_back(v0, v1, v2, normal, id);
+        gpuTriangles.emplace_back(v0, v1, v2, normal, id, materialID);
         bvhVerts.push_back({ v0.x, v0.y, v0.z, 0.0f });
         bvhVerts.push_back({ v1.x, v1.y, v1.z, 0.0f });
         bvhVerts.push_back({ v2.x, v2.y, v2.z, 0.0f });
@@ -159,7 +163,7 @@ int main() {
                 glm::vec4 wv2 = M * glm::vec4(c.Position, 1.0f);
                 glm::vec4 wN = glm::normalize(normalM * glm::vec4(a.Normal, 0.0f));
 
-                pushTriangle(wv0, wv1, wv2, wN, ++nextID);
+                pushTriangle(wv0, wv1, wv2, wN, ++nextID, MAT_BACKPACK);
             }
         }
     }
@@ -188,7 +192,8 @@ int main() {
             floorModel * glm::vec4{ Utility::floorVertices[j + 8], Utility::floorVertices[j + 9], Utility::floorVertices[j + 10], 1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
             glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }),
-            ++nextID
+            ++nextID, 
+            MAT_FLOOR
         );
     }
 
@@ -241,9 +246,23 @@ int main() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, bvhSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    // Upload Material SSBO
+    std::vector<MaterialGPU> materials{};
+    materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 0.3f, 0.5f); // backpack
+    materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 0.8f, 0.1f); // floor
+
+    unsigned int materialSSBO{};
+    glGenBuffers(1, &materialSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, materialSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        materials.size() * sizeof(MaterialGPU),
+        materials.data(), GL_STATIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, materialSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
     // load textures
-    unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
-    unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
+    //unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
+    //unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
     unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
     unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
     unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
@@ -429,6 +448,16 @@ int main() {
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 
+    // Reflection textures 
+    unsigned int gReflectionRaw{};
+    glGenTextures(1, &gReflectionRaw);
+    glBindTexture(GL_TEXTURE_2D, gReflectionRaw);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
     // Variables used to index arrays for ping-ponging
     // 'ping' should always be used as the previous and 'pong'
     // should always be used as the current
@@ -515,12 +544,12 @@ int main() {
         shaderGeometryPass.setMat4("prevProjection", prevProjection);
 
         // bind diffuse map
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, crateDiffuseMap);
+        //glActiveTexture(GL_TEXTURE0);
+        //glBindTexture(GL_TEXTURE_2D, crateDiffuseMap);
 
         // bind specular map
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, crateSpecularMap);
+        //glActiveTexture(GL_TEXTURE1);
+        //glBindTexture(GL_TEXTURE_2D, crateSpecularMap);
 
         // Defines how we render the objects, see gbuffer.frag for details
         shaderGeometryPass.setInt("renderingMode", static_cast<int>(renderSettings.gBufferRenderMode));
@@ -555,7 +584,7 @@ int main() {
         // Ray Tracer Pass
         for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
         {
-            rayTraceShader.use();
+            rayTraceShadowShader.use();
 
             // bind G-buffer textures
             glActiveTexture(GL_TEXTURE1);
@@ -568,25 +597,25 @@ int main() {
             glActiveTexture(GL_TEXTURE3);
             glBindTexture(GL_TEXTURE_2D, blueNoise);
 
-            rayTraceShader.setBool("useBVH", static_cast<bool>(renderSettings.bvhRenderMode));
-            rayTraceShader.setInt("randomSeed", static_cast<int>(rand()));
+            rayTraceShadowShader.setBool("useBVH", static_cast<bool>(renderSettings.bvhRenderMode));
+            rayTraceShadowShader.setInt("randomSeed", static_cast<int>(rand()));
 
             // send uniforms for only this light
-            rayTraceShader.setVec3("light.Position", lightPositions[i]);
-            rayTraceShader.setVec3("light.Color", lightColors[i]);
+            rayTraceShadowShader.setVec3("light.Position", lightPositions[i]);
+            rayTraceShadowShader.setVec3("light.Color", lightColors[i]);
 
             const float constant{ 1.0f };
             const float linear{ 0.22f };
             const float quadratic{ 0.20f };
-            rayTraceShader.setFloat("light.Linear", linear);
-            rayTraceShader.setFloat("light.Quadratic", quadratic);
+            rayTraceShadowShader.setFloat("light.Linear", linear);
+            rayTraceShadowShader.setFloat("light.Quadratic", quadratic);
 
             const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[i].r, lightColors[i].g), lightColors[i].b);
             float maxDistance{ (-linear + std::sqrt(linear * linear - 4 * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
-            rayTraceShader.setFloat("light.MaxDistance", maxDistance);
-            rayTraceShader.setFloat("light.Radius", Constants::LIGHT_RADIUS);
+            rayTraceShadowShader.setFloat("light.MaxDistance", maxDistance);
+            rayTraceShadowShader.setFloat("light.Radius", Constants::LIGHT_RADIUS);
 
-            rayTraceShader.setVec3("viewPos", renderSettings.camera.Position);
+            rayTraceShadowShader.setVec3("viewPos", renderSettings.camera.Position);
 
             // bind shadow texture for this light
             glBindImageTexture(0, gRayTracedShadowsArray, 0, GL_FALSE, i, GL_WRITE_ONLY, GL_R16F);
@@ -595,7 +624,7 @@ int main() {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, triangleSSBO);
 
             // dispatch compute shader
-            rayTraceShader.dispatch((Constants::SCR_WIDTH + 16 - 1) / 16, (Constants::SCR_HEIGHT + 16 - 1) / 16);
+            rayTraceShadowShader.dispatch((Constants::SCR_WIDTH + 16 - 1) / 16, (Constants::SCR_HEIGHT + 16 - 1) / 16);
 
             // make sure writes are visible before next light
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
