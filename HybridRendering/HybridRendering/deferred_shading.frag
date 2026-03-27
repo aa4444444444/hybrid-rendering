@@ -9,6 +9,7 @@
     uniform sampler2D gNormal;
     uniform sampler2D gAlbedoSpec;
     uniform sampler2DArray shadowMaps; // array so that we have one per light
+    uniform sampler2D reflectionMap;
 
     struct Light {
         vec3 Position;
@@ -39,6 +40,7 @@
         // then calculate lighting as usual
         vec3 lighting  = Diffuse * 0.1; // hard-coded ambient component
         vec3 viewDir  = normalize(viewPos - FragPos);
+
         for(int i = 0; i < NR_LIGHTS; ++i)
         {
             // calculate distance between light source and current fragment
@@ -66,8 +68,13 @@
             }
         }
 
+        vec3 reflection = texture(reflectionMap, TexCoords).rgb;
+
+        float reflectWeight = clamp(Specular, 0.0, 1.0);
+        vec3 finalColor = lighting + reflection * reflectWeight;
+
         if (renderingMode == 0) {
-            FragColor = vec4(lighting, 1.0);
+            FragColor = vec4(finalColor, 1.0);
         } else {
             // Shadows
             float Shadow = texture(shadowMaps, vec3(TexCoords, 0)).r;

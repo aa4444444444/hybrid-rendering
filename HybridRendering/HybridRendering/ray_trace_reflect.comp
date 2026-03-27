@@ -1,0 +1,258 @@
+#version 460 core
+
+#define M_PI 3.1415926538
+#define BVH_STACK_SIZE 64
+
+layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout (rgba16f, binding = 0) writeonly uniform image2D gReflectionRaw;
+
+// G-buffer inputs
+layout (binding = 1) uniform sampler2D gPosition;
+layout (binding = 2) uniform sampler2D gNormal;
+layout (binding = 3) uniform sampler2D gAlbedoSpec;
+
+// Blue noise for roughness
+layout (binding = 4) uniform sampler2D blueNoiseTexture;
+
+// Frame Index
+uniform int randomSeed;
+
+// Camera position
+uniform vec3 viewPos;
+
+// Triangles in Scene
+struct Triangle {
+    vec4 v0;
+    vec4 v1;
+    vec4 v2;
+    vec4 normal;
+    uint id;
+    uint materialID;
+    uint pad0;
+    uint pad1;
+};
+
+layout(std430, binding = 3) buffer Triangles {
+    Triangle tris[];
+};
+
+// Bounding Volume Hierarchy
+struct BVHNode {
+    vec4 lminLeft;   // xyz = left child aabbMin, w = left  child index
+    vec4 lmaxRight;  // xyz = left child aabbMax, w = right child index
+    vec4 rminCount;  // xyz = right child aabbMin, w = triCount
+    vec4 rmaxFirst;  // xyz = right child aabbMax, w = firstTri
+};
+
+layout(std430, binding = 4) buffer BVHNodes {
+    BVHNode bvhNodes[];
+};
+
+// Materials
+struct Material {
+    vec4  albedo;       // xyz = colour, w is unused
+    float reflectivity; // [0,1]
+    float roughness;    // [0,1]
+    float pad0;
+    float pad1;
+};
+
+layout(std430, binding = 5) buffer Materials {
+    Material materials[];
+};
+
+// Light
+struct Light { vec3 Position; vec3 Color; float Linear; float Quadratic; float MaxDistance; };
+uniform Light light;
+
+// Camera matrices used to reproject the hit point into screen space
+// so we can look up its albedo from the G-buffer
+uniform mat4 view;
+uniform mat4 projection;
+
+vec2 blueNoise(ivec2 pixelCoords) {
+    // Texture size
+    int N = 128;
+    
+    // Combine pixel coords with randomSeed to randomize sampling
+    int f = (pixelCoords.x * 73856093 ^ pixelCoords.y * 19349663 ^ randomSeed * 83492791) % N;
+    int g = (pixelCoords.y * 83492791 ^ pixelCoords.x * 19349663 ^ randomSeed * 73856093) % N;
+
+    // Compute wrapped pixel coordinate in the blue noise texture
+    ivec2 bnPixel = ivec2(f, g);
+
+    // Normalize to [0,1] for sampling
+    vec2 uv = (vec2(bnPixel) + 0.5) / float(N);
+
+    // Sample the texture
+    return texture(blueNoiseTexture, uv).rg;
+}
+
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, float maxDist, out float tEnter) {
+    vec3 t0 = (bmin - ro) * invRd;
+    vec3 t1 = (bmax - ro) * invRd;
+    vec3 tMin = min(t0, t1);
+    vec3 tMax = max(t0, t1);
+    tEnter = max(max(tMin.x, tMin.y), tMin.z);
+    float tExit = min(min(tMax.x, tMax.y), tMax.z);
+    return (tExit >= max(tEnter, 0.0)) && (tEnter < maxDist);
+}
+
+float intersectTriangleDist(vec3 ro, vec3 rd, Triangle tri) {
+    vec3 e1 = tri.v1.xyz - tri.v0.xyz;
+    vec3 e2 = tri.v2.xyz - tri.v0.xyz;
+    vec3 p  = cross(rd, e2);
+    float det = dot(e1, p);
+    if (abs(det) < 1e-6) return -1.0;
+
+    float invDet = 1.0 / det;
+    vec3 s = ro - tri.v0.xyz;
+    float u = dot(s, p) * invDet;
+    if (u < -1e-6 || u > 1.0 + 1e-6) return -1.0;
+
+    vec3 q = cross(s, e1);
+    float v = dot(rd, q) * invDet;
+    if (v < -1e-6 || u + v > 1.0 + 1e-6) return -1.0;
+
+    float t = dot(e2, q) * invDet;
+    return (t > 1e-4) ? t : -1.0;
+}
+
+int traverseBVHClosest(vec3 origin, vec3 dir, out float tHit) {
+    vec3 invDir = 1.0 / dir;
+    tHit = 1e30;
+    int hitTriIdx = -1;
+
+    int stack[BVH_STACK_SIZE];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
+
+    while (stackPtr > 0) {
+        BVHNode node = bvhNodes[stack[--stackPtr]];
+
+        uint left = floatBitsToUint(node.lminLeft.w);
+        uint right = floatBitsToUint(node.lmaxRight.w);
+        uint triCount = floatBitsToUint(node.rminCount.w);
+        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
+
+        if (triCount > 0u) {
+            // Leaf — test each triangle for closest hit
+            for (uint i = firstTri; i < firstTri + triCount; ++i) {
+                float t = intersectTriangleDist(origin, dir, tris[i]);
+                if (t > 0.0 && t < tHit) {
+                    tHit = t;
+                    hitTriIdx = int(i);
+                }
+            }
+        } else {
+            // Internal node — test both child AABBs
+            float tL, tR;
+            bool hitLeft = intersectAABB(origin, invDir, node.lminLeft.xyz, node.lmaxRight.xyz, tHit, tL);
+            bool hitRight = intersectAABB(origin, invDir, node.rminCount.xyz, node.rmaxFirst.xyz, tHit, tR);
+
+            // Push farther child first so closer is visited first
+            if (hitLeft && hitRight) {
+                if (tL < tR) {
+                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
+                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
+                } else {
+                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
+                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
+                }
+            } else if (hitLeft)  { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);  }
+            else if  (hitRight)  { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right); }
+        }
+    }
+
+    return hitTriIdx;
+}
+
+// Reproject a world-space hit position into G-buffer UV [0,1] space.
+// Returns false if the point is behind the camera or off-screen.
+bool reprojectToUV(vec3 worldPos, out vec2 uv) {
+    vec4 clipPos = projection * view * vec4(worldPos, 1.0);
+    if (clipPos.w <= 0.0) return false;
+    vec3 ndc = clipPos.xyz / clipPos.w;
+    if (ndc.z < -1.0 || ndc.z > 1.0) return false;
+    uv = ndc.xy * 0.5 + 0.5;
+    return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
+}
+
+vec3 shadeHit(vec3 hitPos, vec3 hitNormal, vec3 fallbackAlbedo) {
+    // Reproject the hit point into screen space and read its true texture
+    // colour from the G-buffer.  This gives us the actual AssImp diffuse
+    // colour rather than the placeholder MaterialGPU albedo.
+    vec3 albedo = fallbackAlbedo;
+    vec2 hitUV;
+    if (reprojectToUV(hitPos, hitUV)) {
+        vec3 gbufferAlbedo = texture(gAlbedoSpec, hitUV).rgb;
+        // Only override if the G-buffer pixel has real geometry
+        if (dot(gbufferAlbedo, gbufferAlbedo) > 0.0) {
+            albedo = gbufferAlbedo;
+        }
+    }
+
+    vec3 ambient = albedo * 0.1;
+    vec3 toLight = light.Position - hitPos;
+    float dist = length(toLight);
+    if (dist >= light.MaxDistance) return ambient;
+
+    vec3 lightDir = toLight / dist;
+    float diff = max(dot(hitNormal, lightDir), 0.0);
+    float atten = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
+    vec3 diffuse = diff * albedo * light.Color * atten;
+
+    return ambient + diffuse;
+}
+
+void main(){
+    ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 dims = imageSize(gReflectionRaw);
+    if (pixelCoords.x >= dims.x || pixelCoords.y >= dims.y)
+        return;
+
+    // Since our gPosition stores world-space coordinates, this is the world pos of an object
+    // (if it exists) at the pixel coordiantes. 
+	vec3 objectWorldPos = texelFetch(gPosition, pixelCoords, 0).xyz;
+
+    // Similarly, our world-space normal at the pixel coordinates
+	vec3 objectWorldNormal = normalize(texelFetch(gNormal, pixelCoords, 0).xyz);
+
+    float specular = texelFetch(gAlbedoSpec, pixelCoords, 0).a;
+
+    // No geometry at this pixel or surface is not reflective
+    if (length(objectWorldPos) == 0.0 || specular < 0.01) {
+        imageStore(gReflectionRaw, pixelCoords, vec4(0.0));
+        return;
+    }
+
+    // reflection ray
+    vec3 viewDir = normalize(objectWorldPos - viewPos);
+    vec3 reflectDir = reflect(viewDir, objectWorldNormal);
+
+    // Offset origin along normal to avoid self intersection
+    vec3 origin = objectWorldPos + objectWorldNormal * 0.005;
+
+    // Trace closest-hit reflection ray
+    float tHit;
+    int hitIdx = traverseBVHClosest(origin, reflectDir, tHit);
+
+    vec3 reflectedColor = vec3(0.0);
+
+    if (hitIdx >= 0) {
+        Triangle hitTri = tris[hitIdx];
+        Material hitMat = materials[hitTri.materialID];
+        vec3 hitPos = origin + reflectDir * tHit;
+        vec3 hitNorm = normalize(hitTri.normal.xyz);
+
+        reflectedColor = shadeHit(hitPos, hitNorm, hitMat.albedo.xyz);
+
+        // Scale by the material's reflectivity so very reflective surfaces contribute more than dull ones
+        reflectedColor *= hitMat.reflectivity;
+    }
+
+    // Also scale by the surface's own specular — highly specular surfaces show reflections more prominently
+    reflectedColor *= specular;
+
+    imageStore(gReflectionRaw, pixelCoords, vec4(reflectedColor, 1.0));
+}

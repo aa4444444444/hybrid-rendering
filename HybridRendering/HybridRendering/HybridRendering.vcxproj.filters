@@ -139,5 +139,8 @@
     <None Include="gbuffer.vert">
       <Filter>Resource Files</Filter>
     </None>
+    <None Include="ray_trace_reflect.comp">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

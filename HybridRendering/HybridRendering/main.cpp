@@ -87,6 +87,7 @@ int main() {
     Shader shaderLightingPass{ "deferred_shading.vert", "deferred_shading.frag" };
     Shader shaderLightBox{ "deferred_light.vert", "deferred_light.frag" };
     Shader rayTraceShadowShader{ "ray_trace_shadow.comp" };
+    Shader rayTraceReflectShader{ "ray_trace_reflect.comp" };
     Shader temporalAccumulationShader{ "temporal_accumulation.comp" };
     Shader spatialFilteringShader{ "spatial_filtering.comp" };
 
@@ -248,8 +249,8 @@ int main() {
 
     // Upload Material SSBO
     std::vector<MaterialGPU> materials{};
-    materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 0.3f, 0.5f); // backpack
-    materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 0.8f, 0.1f); // floor
+    materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 1.0f, 0.0f); // backpack
+    materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 1.0f, 0.0f); // floor
 
     unsigned int materialSSBO{};
     glGenBuffers(1, &materialSSBO);
@@ -263,8 +264,8 @@ int main() {
     // load textures
     //unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
     //unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
-    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor.jpg", GL_TEXTURE2) };
-    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor_specular.jpg", GL_TEXTURE3) };
+    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor2.png", GL_TEXTURE2) };
+    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor2_specular.png", GL_TEXTURE3) };
     unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
 
     shaderGeometryPass.use();
@@ -494,6 +495,7 @@ int main() {
     shaderLightingPass.setInt("gNormal", 1);
     shaderLightingPass.setInt("gAlbedoSpec", 2);
     shaderLightingPass.setInt("shadowMaps", 3);
+    shaderLightingPass.setInt("reflectionMap", 4);
 
     // The previous frames MVP matrices used for temporal accumulation
     // glm::mat4 prevModel{ glm::mat4(1.0f) };
@@ -581,7 +583,7 @@ int main() {
         prevView = view;
         prevProjection = projection;
 
-        // Ray Tracer Pass
+        // Shadow Ray Tracer Pass
         for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
         {
             rayTraceShadowShader.use();
@@ -629,6 +631,43 @@ int main() {
             // make sure writes are visible before next light
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         }
+
+        // Reflection ray tracing pass
+        rayTraceReflectShader.use();
+
+        // Image output at binding = 0
+        glBindImageTexture(0, gReflectionRaw, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+
+        // G-buffer inputs
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, gPosition);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, gNormal);
+        glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+        glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, blueNoise);
+
+        rayTraceReflectShader.setInt("randomSeed", static_cast<int>(rand()));
+        rayTraceReflectShader.setVec3("viewPos", renderSettings.camera.Position);
+
+        // Pass camera matrices so the shader can reproject hit points back into
+        // screen space to sample their true albedo from the G-buffer
+        rayTraceReflectShader.setMat4("view", view);
+        rayTraceReflectShader.setMat4("projection", projection);
+
+        // Pass light info so reflected surfaces can be shaded
+        rayTraceReflectShader.setVec3("light.Position", lightPositions[0]);
+        rayTraceReflectShader.setVec3("light.Color", lightColors[0]);
+        const float constant{ 1.0f }, linear{ 0.22f }, quadratic{ 0.20f };
+        rayTraceReflectShader.setFloat("light.Linear", linear);
+        rayTraceReflectShader.setFloat("light.Quadratic", quadratic);
+        const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[0].r, lightColors[0].g), lightColors[0].b);
+        float maxDistance{ (-linear + std::sqrt(linear * linear - 4.0f * quadratic * (constant - (256.0f / 5.0f) * maxBrightness))) / (2.0f * quadratic) };
+        rayTraceReflectShader.setFloat("light.MaxDistance", maxDistance);
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, triangleSSBO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, bvhSSBO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, materialSSBO);
+
+        rayTraceReflectShader.dispatch((Constants::SCR_WIDTH + 15) / 16, (Constants::SCR_HEIGHT + 15) / 16);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
         // Temporal Accumulation pass: Apply temporal SVGF
         if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::temporal) {
@@ -796,6 +835,10 @@ int main() {
         // Defines how we render the objects, see deferred_shading.frag for details
         shaderLightingPass.setInt("renderingMode", static_cast<int>(renderSettings.deferredShadingRenderMode));
 
+        // bind reflectance map
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, gReflectionRaw);
+
         // send light relevant uniforms
         for (unsigned int i{ 0 }; i < lightPositions.size(); ++i)
         {
@@ -826,6 +869,8 @@ int main() {
             } else {
                 glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[ping]);
             }
+
+            
         }
 
         shaderLightingPass.setVec3("viewPos", renderSettings.camera.Position);

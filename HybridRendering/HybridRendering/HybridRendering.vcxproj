@@ -178,6 +178,7 @@
     <None Include="deferred_shading.vert" />
     <None Include="gbuffer.frag" />
     <None Include="gbuffer.vert" />
+    <None Include="ray_trace_reflect.comp" />
     <None Include="ray_trace_shadow.comp" />
     <None Include="spatial_filtering.comp" />
     <None Include="temporal_accumulation.comp" />
