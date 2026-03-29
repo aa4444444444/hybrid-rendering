@@ -1,6 +1,7 @@
 #include <array>
 #include <iostream>
 #include <string_view>
+#include <chrono>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -16,6 +17,7 @@
 #include "plog/Appenders/ColorConsoleAppender.h"
 #include <plog/Formatters/TxtFormatter.h>
 #include "plog/Initializers/ConsoleInitializer.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 
 #include "constants.h"
@@ -32,6 +34,7 @@
 // forward declarations
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+void buildGBuffer(unsigned int& gPosition, unsigned int& gNormal, unsigned int& gAlbedoSpec, unsigned int& gMotionDepthVec);
 
 // settings
 bool firstMouse{ true };
@@ -93,8 +96,11 @@ int main() {
 
     // Load the backpack model
     PLOGD << "Loading backpack model"; 
+    std::chrono::steady_clock::time_point model_begin = std::chrono::steady_clock::now();
     Model backpackModel("resources/objects/backpack/backpack.obj");
-    PLOGD << "Model loaded: " << backpackModel.meshes.size() << " mesh(es)";
+    std::chrono::steady_clock::time_point model_end = std::chrono::steady_clock::now();
+    PLOGI << "Model loaded: " << backpackModel.meshes.size() << " mesh(es) in " <<
+        std::chrono::duration_cast<std::chrono::milliseconds>(model_end - model_begin).count() << "[ms]";
 
     // Object positions
     std::vector<glm::vec3> objectPositions{};
@@ -169,22 +175,6 @@ int main() {
         }
     }
 
-    /*
-    // Boxes
-    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
-        glm::mat4 normalModel{ glm::transpose(glm::inverse(glm::mat3(objectTransforms[i]))) };
-        for (unsigned int j{ 0 }; j < Utility::cubeVertices.size(); j += (8 * 3)) {
-            pushTriangle(
-                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j],    Utility::cubeVertices[j + 1],  Utility::cubeVertices[j + 2],  1.0f },
-                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 8],  Utility::cubeVertices[j + 9],  Utility::cubeVertices[j + 10], 1.0f },
-                objectTransforms[i] * glm::vec4{ Utility::cubeVertices[j + 16], Utility::cubeVertices[j + 17], Utility::cubeVertices[j + 18], 1.0f },
-                glm::normalize(normalModel * glm::vec4{ Utility::cubeVertices[j + 19], Utility::cubeVertices[j + 20], Utility::cubeVertices[j + 21], 0.0f }),
-                nextID++
-            );
-        }
-    }
-    */
-
     // Floor
     glm::mat4 floorNormalModel{ glm::transpose(glm::inverse(glm::mat3(floorModel))) };
     for (unsigned int j{ 0 }; j < Utility::floorVertices.size(); j += (8 * 3)) {
@@ -212,11 +202,15 @@ int main() {
     // gpuBVH.bvh.primIdx maps BVH-order index back to the original triangle index in gpuTriangles bvhVerts.  
     // We use this to reorder the triangle SSBO.
     PLOGD << "Building BVH (TinyBVH BVH_GPU) over " << triCount << " triangles";
-
+    std::chrono::steady_clock::time_point bvh_begin = std::chrono::steady_clock::now();
+    
     tinybvh::BVH_GPU gpuBVH;
     gpuBVH.Build(bvhVerts.data(), triCount);
 
-    PLOGD << "BVH built: " << gpuBVH.usedNodes << " nodes";
+    std::chrono::steady_clock::time_point bvh_end = std::chrono::steady_clock::now();
+
+    PLOGI << "BVH built: " << gpuBVH.usedNodes << " nodes in " << 
+        std::chrono::duration_cast<std::chrono::milliseconds>(bvh_end - bvh_begin).count() << "[ms]";
 
     // Reorder gpuTriangles to match the BVH's internal primitive order.
     // The shader indexes into the triangle SSBO using leaf.firstTri, which refers to positions in this BVH-reordered array.
@@ -262,11 +256,17 @@ int main() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // load textures
+    PLOGD << "Loading Misc. Textures";
+    std::chrono::steady_clock::time_point texture_begin = std::chrono::steady_clock::now();
     //unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
     //unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
-    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor2.png", GL_TEXTURE2) };
-    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor2_specular.png", GL_TEXTURE3) };
-    unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
+    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor2.png", 2) };
+    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor2_specular.png", 3) };
+    unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", 4)};
+    std::chrono::steady_clock::time_point texture_end = std::chrono::steady_clock::now();
+
+    PLOGI << "Loaded Mist. Textures in " <<
+        std::chrono::duration_cast<std::chrono::milliseconds>(texture_end - texture_begin).count() << "[ms]";
 
     shaderGeometryPass.use();
     shaderGeometryPass.setInt("texture_diffuse1", 0);
@@ -280,43 +280,7 @@ int main() {
     // G-Buffer keeps track of positions, normals, albedo, specular intensity, and motion/depth information
     unsigned int gPosition{}, gNormal{}, gAlbedoSpec{}, gMotionDepthVec{};
 
-    // Position color buffer
-    glGenTextures(1, &gPosition);
-    glBindTexture(GL_TEXTURE_2D, gPosition);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
-
-    // Normal color buffer
-    glGenTextures(1, &gNormal);
-    glBindTexture(GL_TEXTURE_2D, gNormal);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
-
-    // Alebdo + Spec color buffer
-    glGenTextures(1, &gAlbedoSpec);
-    glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL); 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
-
-    // Motion Vector Texture
-    glGenTextures(1, &gMotionDepthVec);
-    glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gMotionDepthVec, 0);
-
-    // All 4 should be color attachments
-    unsigned int attachments[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
-    
-    // Output from our fragment shader will be written into the 4 buffers
-    glDrawBuffers(4, attachments);
+    buildGBuffer(gPosition, gNormal, gAlbedoSpec, gMotionDepthVec);
 
     // create and attach depth buffer (renderbuffer)
     unsigned int rboDepth{};
@@ -972,4 +936,44 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
     renderSettings.camera.ProcessMouseScroll(static_cast<float>(yoffset));
+}
+
+void buildGBuffer(unsigned int& gPosition, unsigned int& gNormal, unsigned int& gAlbedoSpec, unsigned int& gMotionDepthVec) {
+    // Position color buffer
+    glGenTextures(1, &gPosition);
+    glBindTexture(GL_TEXTURE_2D, gPosition);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gPosition, 0);
+
+    // Normal color buffer
+    glGenTextures(1, &gNormal);
+    glBindTexture(GL_TEXTURE_2D, gNormal);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gNormal, 0);
+
+    // Alebdo + Spec color buffer
+    glGenTextures(1, &gAlbedoSpec);
+    glBindTexture(GL_TEXTURE_2D, gAlbedoSpec);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gAlbedoSpec, 0);
+
+    // Motion Vector Texture
+    glGenTextures(1, &gMotionDepthVec);
+    glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, gMotionDepthVec, 0);
+
+    // All 4 should be color attachments
+    unsigned int attachments[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+
+    // Output from our fragment shader will be written into the 4 buffers
+    glDrawBuffers(4, attachments);
 }
