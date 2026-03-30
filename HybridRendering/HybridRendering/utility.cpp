@@ -127,7 +127,7 @@ namespace Utility {
             else if (nrComponents == 4)
                 format = GL_RGBA;
 
-            glActiveTexture(activeTextureUnit);
+            glActiveTexture(GL_TEXTURE0 + activeTextureUnit);
             glBindTexture(GL_TEXTURE_2D, textureID);
             glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
             glGenerateMipmap(GL_TEXTURE_2D);
@@ -168,7 +168,7 @@ namespace Utility {
             else if (nrComponents == 4)
                 format = GL_RGBA;
 
-            glActiveTexture(activeTextureUnit);
+            glActiveTexture(GL_TEXTURE0 + activeTextureUnit);
             glBindTexture(GL_TEXTURE_2D, textureID);
             glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_FLOAT, data);
 
