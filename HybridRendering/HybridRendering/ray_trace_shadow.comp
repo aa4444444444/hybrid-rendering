@@ -37,12 +37,15 @@ uniform vec3 viewPos;
 
 // Scene geometry
 struct Triangle {
-    vec4 v0;        // 16 bytes
-    vec4 v1;        // 16 bytes
-    vec4 v2;        // 16 bytes
-    vec4 normal;    // 16 bytes
-    uint id;        // 4 bytes
-                    // padding to next 16-byte boundary (12 byte padding)
+    vec4 v0;
+    vec4 v1;
+    vec4 v2;
+    vec4 normal;
+    vec4 diffuseColor;
+    uint id;
+    uint materialID;
+    uint pad0;
+    uint pad1;
 };
 
 layout(std430, binding = 3) buffer Triangles {

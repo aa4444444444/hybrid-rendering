@@ -26,6 +26,7 @@ struct Triangle {
     vec4 v1;
     vec4 v2;
     vec4 normal;
+    vec4 diffuseColor;
     uint id;
     uint materialID;
     uint pad0;
@@ -64,11 +65,6 @@ layout(std430, binding = 5) buffer Materials {
 // Light
 struct Light { vec3 Position; vec3 Color; float Linear; float Quadratic; float MaxDistance; };
 uniform Light light;
-
-// Camera matrices used to reproject the hit point into screen space
-// so we can look up its albedo from the G-buffer
-uniform mat4 view;
-uniform mat4 projection;
 
 vec2 blueNoise(ivec2 pixelCoords) {
     // Texture size
@@ -167,42 +163,18 @@ int traverseBVHClosest(vec3 origin, vec3 dir, out float tHit) {
     return hitTriIdx;
 }
 
-// Reproject a world-space hit position into G-buffer UV [0,1] space.
-// Returns false if the point is behind the camera or off-screen.
-bool reprojectToUV(vec3 worldPos, out vec2 uv) {
-    vec4 clipPos = projection * view * vec4(worldPos, 1.0);
-    if (clipPos.w <= 0.0) return false;
-    vec3 ndc = clipPos.xyz / clipPos.w;
-    if (ndc.z < -1.0 || ndc.z > 1.0) return false;
-    uv = ndc.xy * 0.5 + 0.5;
-    return uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
-}
-
-vec3 shadeHit(vec3 hitPos, vec3 hitNormal, vec3 fallbackAlbedo) {
-    // Reproject the hit point into screen space and read its true texture
-    // colour from the G-buffer.  This gives us the actual AssImp diffuse
-    // colour rather than the placeholder MaterialGPU albedo.
-    vec3 albedo = fallbackAlbedo;
-    vec2 hitUV;
-    if (reprojectToUV(hitPos, hitUV)) {
-        vec3 gbufferAlbedo = texture(gAlbedoSpec, hitUV).rgb;
-        // Only override if the G-buffer pixel has real geometry
-        if (dot(gbufferAlbedo, gbufferAlbedo) > 0.0) {
-            albedo = gbufferAlbedo;
-        }
-    }
-
-    vec3 ambient = albedo * 0.1;
-    vec3 toLight = light.Position - hitPos;
-    float dist = length(toLight);
+vec3 shadeHit(vec3 hitPos, vec3 hitNormal, vec3 diffuse) {
+    vec3  ambient = diffuse * 0.1;
+    vec3  toLight = light.Position - hitPos;
+    float dist    = length(toLight);
     if (dist >= light.MaxDistance) return ambient;
 
-    vec3 lightDir = toLight / dist;
-    float diff = max(dot(hitNormal, lightDir), 0.0);
-    float atten = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
-    vec3 diffuse = diff * albedo * light.Color * atten;
+    vec3  lightDir = toLight / dist;
+    float diff     = max(dot(hitNormal, lightDir), 0.0);
+    float atten    = 1.0 / (1.0 + light.Linear * dist + light.Quadratic * dist * dist);
+    vec3  diffuse_ = diff * diffuse * light.Color * atten;
 
-    return ambient + diffuse;
+    return ambient + diffuse_;
 }
 
 void main(){
@@ -231,7 +203,7 @@ void main(){
     vec3 reflectDir = reflect(viewDir, objectWorldNormal);
 
     // Offset origin along normal to avoid self intersection
-    vec3 origin = objectWorldPos + objectWorldNormal * 0.005;
+    vec3 origin = objectWorldPos + objectWorldNormal * 0.005f;
 
     // Trace closest-hit reflection ray
     float tHit;
@@ -245,7 +217,9 @@ void main(){
         vec3 hitPos = origin + reflectDir * tHit;
         vec3 hitNorm = normalize(hitTri.normal.xyz);
 
-        reflectedColor = shadeHit(hitPos, hitNorm, hitMat.albedo.xyz);
+        vec3 diffuse = hitTri.diffuseColor.xyz;
+
+        reflectedColor = shadeHit(hitPos, hitNorm, diffuse);
 
         // Scale by the material's reflectivity so very reflective surfaces contribute more than dull ones
         reflectedColor *= hitMat.reflectivity;

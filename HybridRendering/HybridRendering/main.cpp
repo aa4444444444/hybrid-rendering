@@ -23,7 +23,6 @@
 #include "constants.h"
 #include "camera.h"
 #include "shader.h"
-#include "settings.h"
 #include "utility.h"
 #include "triangle_gpu.h"
 #include "material_gpu.h"
@@ -52,6 +51,73 @@ static uint32_t nextID{ 0 };
 // Material IDs
 constexpr uint32_t MAT_BACKPACK{ 0 };
 constexpr uint32_t MAT_FLOOR{ 1 };
+
+struct CpuTexture {
+    unsigned char* data{ nullptr };
+    int width{ 0 };
+    int height{ 0 };
+    int channels{ 0 };
+
+    bool valid() const { return data != nullptr && width > 0 && height > 0; }
+
+    // Bilinear sample at UV coordinates [0,1].  Returns sRGB in [0,1].
+    glm::vec3 sample(glm::vec2 uv) const {
+        if (!valid()) return glm::vec3(0.8f); // neutral grey fallback
+
+        // Wrap UVs (repeat mode)
+        uv.x = uv.x - std::floor(uv.x);
+        uv.y = uv.y - std::floor(uv.y);
+
+        // stb_image loads with y=0 at top; flip to match OpenGL convention
+        uv.y = 1.0f - uv.y;
+
+        float px = uv.x * static_cast<float>(width - 1);
+        float py = uv.y * static_cast<float>(height - 1);
+
+        int x0 = static_cast<int>(px);
+        int y0 = static_cast<int>(py);
+        int x1 = std::min(x0 + 1, width - 1);
+        int y1 = std::min(y0 + 1, height - 1);
+        float fx = px - static_cast<float>(x0);
+        float fy = py - static_cast<float>(y0);
+
+        auto fetch = [&](int x, int y) -> glm::vec3 {
+            int idx = (y * width + x) * channels;
+            float r = data[idx + 0] / 255.0f;
+            float g = (channels >= 2) ? data[idx + 1] / 255.0f : r;
+            float b = (channels >= 3) ? data[idx + 2] / 255.0f : r;
+            return glm::vec3(r, g, b);
+            };
+
+        // Bilinear interpolation
+        glm::vec3 c00 = fetch(x0, y0);
+        glm::vec3 c10 = fetch(x1, y0);
+        glm::vec3 c01 = fetch(x0, y1);
+        glm::vec3 c11 = fetch(x1, y1);
+
+        return glm::mix(glm::mix(c00, c10, fx),
+            glm::mix(c01, c11, fx), fy);
+    }
+
+    void free() {
+        if (data) { stbi_image_free(data); data = nullptr; }
+    }
+};
+
+// Load a texture file into CPU memory for sampling.
+// The caller is responsible for calling free() when done.
+CpuTexture loadCpuTexture(const std::string& path) {
+    CpuTexture tex{};
+    // stbi_set_flip_vertically_on_load was set to true for OpenGL textures,
+    // but we handle the flip ourselves in CpuTexture::sample, so load raw.
+    stbi_set_flip_vertically_on_load(false);
+    tex.data = stbi_load(path.c_str(), &tex.width, &tex.height, &tex.channels, 0);
+    stbi_set_flip_vertically_on_load(true); // restore for GPU texture loads
+    if (!tex.data) {
+        PLOGE << "CpuTexture: failed to load " << path;
+    }
+    return tex;
+}
 
 int main() {
     plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
@@ -98,6 +164,7 @@ int main() {
     PLOGD << "Loading backpack model"; 
     std::chrono::steady_clock::time_point model_begin = std::chrono::steady_clock::now();
     Model backpackModel("resources/objects/backpack/backpack.obj");
+    //Model backpackModel("resources/objects/main_sponza/NewSponza_Main_glTF_003.gltf");
     std::chrono::steady_clock::time_point model_end = std::chrono::steady_clock::now();
     PLOGI << "Model loaded: " << backpackModel.meshes.size() << " mesh(es) in " <<
         std::chrono::duration_cast<std::chrono::milliseconds>(model_end - model_begin).count() << "[ms]";
@@ -120,6 +187,7 @@ int main() {
         glm::mat4 model{ glm::mat4(1.0f) }; 
         model = glm::translate(model, objectPositions[i]);
         model = glm::scale(model, glm::vec3(0.3f));
+        //model = glm::scale(model, glm::vec3(1.5f));
         
         
         objectTransforms.push_back(model);
@@ -129,6 +197,22 @@ int main() {
     glm::mat4 floorModel{ glm::mat4(1.0f) };
     floorModel = glm::translate(floorModel, glm::vec3{ 0.0f, -1.5f, 0.0f });
     floorModel = glm::scale(floorModel, glm::vec3(5.0f));
+
+    PLOGD << "Loading CPU-side textures for diffuse baking...";
+    std::unordered_map<std::string, CpuTexture> cpuTextureCache;
+
+    auto getCpuTexture = [&](const std::string& path) -> CpuTexture& {
+        auto it = cpuTextureCache.find(path);
+        if (it == cpuTextureCache.end()) {
+            cpuTextureCache[path] = loadCpuTexture(path);
+            return cpuTextureCache[path];
+        }
+        return it->second;
+        };
+
+    // For the floor we use a neutral light grey (no diffuse texture on the
+    // floor mesh — the floor draws with a manual OpenGL texture).
+    const glm::vec4 floorDiffuseBaked{ 0.85f, 0.85f, 0.85f, 1.0f };
     
     // Contains the triangles in the scene that will get passed to the GPU in an SSBO
     std::vector<TriangleGPU> gpuTriangles{};
@@ -140,9 +224,9 @@ int main() {
     std::vector<tinybvh::bvhvec4> bvhVerts{};
 
     // Lambda function that pushes a triangle to both gpuTriangles and bvhVerts
-    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, uint32_t id, uint32_t materialID)
+    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, const glm::vec4& diffuse, uint32_t id, uint32_t materialID)
     {
-        gpuTriangles.emplace_back(v0, v1, v2, normal, id, materialID);
+        gpuTriangles.emplace_back(v0, v1, v2, normal, diffuse, id, materialID);
         bvhVerts.push_back({ v0.x, v0.y, v0.z, 0.0f });
         bvhVerts.push_back({ v1.x, v1.y, v1.z, 0.0f });
         bvhVerts.push_back({ v2.x, v2.y, v2.z, 0.0f });
@@ -154,13 +238,22 @@ int main() {
         const glm::mat4& M = objectTransforms[inst];
         glm::mat4 normalM = glm::transpose(glm::inverse(glm::mat3(M)));
 
-        for (const Mesh& mesh : backpackModel.meshes)
-        {
+        for (const Mesh& mesh : backpackModel.meshes) {
             const auto& verts = mesh.vertices;
             const auto& idxList = mesh.indices;
 
-            for (size_t f = 0; f < idxList.size(); f += 3)
-            {
+            // Find the first diffuse texture for this mesh, if any
+            CpuTexture* diffTex = nullptr;
+            for (const Texture& tex : mesh.textures) {
+                if (tex.type == "texture_diffuse") {
+                    // tex.path is the path AssImp gave us (relative to .obj dir)
+                    std::string fullPath = backpackModel.directory + "/" + tex.path;
+                    diffTex = &getCpuTexture(fullPath);
+                    break;
+                }
+            }
+
+            for (size_t f = 0; f < idxList.size(); f += 3) {
                 const Vertex& a = verts[idxList[f]];
                 const Vertex& b = verts[idxList[f + 1]];
                 const Vertex& c = verts[idxList[f + 2]];
@@ -170,7 +263,16 @@ int main() {
                 glm::vec4 wv2 = M * glm::vec4(c.Position, 1.0f);
                 glm::vec4 wN = glm::normalize(normalM * glm::vec4(a.Normal, 0.0f));
 
-                pushTriangle(wv0, wv1, wv2, wN, ++nextID, MAT_BACKPACK);
+                // Bake diffuse colour: centroid UV bilinear sample
+                glm::vec2 centroidUV = (a.TexCoords + b.TexCoords + c.TexCoords) / 3.0f;
+                glm::vec3 colour{ 0.8f, 0.8f, 0.8f }; // neutral fallback
+                if (diffTex && diffTex->valid()) {
+                    colour = diffTex->sample(centroidUV);
+                }
+
+                pushTriangle(wv0, wv1, wv2, wN,
+                    glm::vec4(colour, 1.0f),
+                    ++nextID, MAT_BACKPACK);
             }
         }
     }
@@ -183,10 +285,17 @@ int main() {
             floorModel * glm::vec4{ Utility::floorVertices[j + 8], Utility::floorVertices[j + 9], Utility::floorVertices[j + 10], 1.0f },
             floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
             glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }),
+            floorDiffuseBaked,
             ++nextID, 
             MAT_FLOOR
         );
     }
+
+    for (auto& [path, tex] : cpuTextureCache) {
+        tex.free();
+    }
+    cpuTextureCache.clear();
+    PLOGD << "CPU texture data freed after baking";
 
     const uint32_t triCount = static_cast<uint32_t>(gpuTriangles.size());
 
@@ -243,6 +352,7 @@ int main() {
 
     // Upload Material SSBO
     std::vector<MaterialGPU> materials{};
+    // albedo, reflectivity, roughness
     materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 1.0f, 0.0f); // backpack
     materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 1.0f, 0.0f); // floor
 
@@ -258,11 +368,12 @@ int main() {
     // load textures
     PLOGD << "Loading Misc. Textures";
     std::chrono::steady_clock::time_point texture_begin = std::chrono::steady_clock::now();
-    //unsigned int crateDiffuseMap{ Utility::loadTexture("resources/textures/container2.png", GL_TEXTURE0) };
-    //unsigned int crateSpecularMap{ Utility::loadTexture("resources/textures/container2_specular.png", GL_TEXTURE1) };
-    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor2.png", 2) };
-    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor2_specular.png", 3) };
-    unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", 4)};
+    PLOGD << "Loading floorDiffuse";
+    unsigned int floorDiffuseMap{ Utility::loadTexture("resources/textures/floor2.png", GL_TEXTURE2) };
+    PLOGD << "Loading floorSpecular";
+    unsigned int floorSpecularMap{ Utility::loadTexture("resources/textures/floor2_specular.png", GL_TEXTURE3) };
+    PLOGD << "Loading blueNoise";
+    unsigned int blueNoise{ Utility::loadNoiseTexture("resources/textures/blue_noise.png", GL_TEXTURE4)};
     std::chrono::steady_clock::time_point texture_end = std::chrono::steady_clock::now();
 
     PLOGI << "Loaded Mist. Textures in " <<
@@ -485,6 +596,12 @@ int main() {
 
         Utility::setupImguiWindow(renderSettings);
 
+        // Get lighting coefficients
+        glm::vec3 lightingCoeffcients{ Settings::lightAttenuation[static_cast<int>(renderSettings.lightIntensity)] };
+        const float constant{ lightingCoeffcients[0] };
+        const float linear{ lightingCoeffcients[1] };
+        const float quadratic{ lightingCoeffcients[2] };
+
         // geometry pass: render scene's geometry/color data into gbuffer
         glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -509,14 +626,6 @@ int main() {
         shaderGeometryPass.setMat4("prevView", prevView);
         shaderGeometryPass.setMat4("prevProjection", prevProjection);
 
-        // bind diffuse map
-        //glActiveTexture(GL_TEXTURE0);
-        //glBindTexture(GL_TEXTURE_2D, crateDiffuseMap);
-
-        // bind specular map
-        //glActiveTexture(GL_TEXTURE1);
-        //glBindTexture(GL_TEXTURE_2D, crateSpecularMap);
-
         // Defines how we render the objects, see gbuffer.frag for details
         shaderGeometryPass.setInt("renderingMode", static_cast<int>(renderSettings.gBufferRenderMode));
 
@@ -525,7 +634,6 @@ int main() {
         {
             shaderGeometryPass.setMat4("model", objectTransforms[i]);
 
-            //Utility::renderCube();
             backpackModel.Draw(shaderGeometryPass);
         }
 
@@ -570,9 +678,6 @@ int main() {
             rayTraceShadowShader.setVec3("light.Position", lightPositions[i]);
             rayTraceShadowShader.setVec3("light.Color", lightColors[i]);
 
-            const float constant{ 1.0f };
-            const float linear{ 0.22f };
-            const float quadratic{ 0.20f };
             rayTraceShadowShader.setFloat("light.Linear", linear);
             rayTraceShadowShader.setFloat("light.Quadratic", quadratic);
 
@@ -611,15 +716,10 @@ int main() {
         rayTraceReflectShader.setInt("randomSeed", static_cast<int>(rand()));
         rayTraceReflectShader.setVec3("viewPos", renderSettings.camera.Position);
 
-        // Pass camera matrices so the shader can reproject hit points back into
-        // screen space to sample their true albedo from the G-buffer
-        rayTraceReflectShader.setMat4("view", view);
-        rayTraceReflectShader.setMat4("projection", projection);
-
         // Pass light info so reflected surfaces can be shaded
         rayTraceReflectShader.setVec3("light.Position", lightPositions[0]);
         rayTraceReflectShader.setVec3("light.Color", lightColors[0]);
-        const float constant{ 1.0f }, linear{ 0.22f }, quadratic{ 0.20f };
+
         rayTraceReflectShader.setFloat("light.Linear", linear);
         rayTraceReflectShader.setFloat("light.Quadratic", quadratic);
         const float maxBrightness = std::fmaxf(std::fmaxf(lightColors[0].r, lightColors[0].g), lightColors[0].b);
@@ -810,9 +910,6 @@ int main() {
             shaderLightingPass.setVec3("lights[" + std::to_string(i) + "].Color", lightColors[i]);
 
             // update attenuation parameters and calculate radius
-            const float constant{ 1.0f };
-            const float linear{ 0.22f };
-            const float quadratic{ 0.20f };
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Linear", linear);
             shaderLightingPass.setFloat("lights[" + std::to_string(i) + "].Quadratic", quadratic);
 

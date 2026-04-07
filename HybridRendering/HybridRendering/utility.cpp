@@ -385,6 +385,40 @@ namespace Utility {
             ImGui::EndCombo();
         }
 
+        /* ==============================================================================
+        Light Intensity dropdown
+        =============================================================================== */
+        const std::array<std::string, 12> lightIntensityModes{
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+        };
+
+        const std::string lightIntensityModePreview{ lightIntensityModes[static_cast<int>(renderSettings.lightIntensity)] };
+
+        if (ImGui::BeginCombo("Light Intensity", lightIntensityModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::LightIntensity::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.lightIntensity) == i };
+
+                if (ImGui::Selectable(lightIntensityModes[i].c_str(), is_selected))
+                    renderSettings.lightIntensity = static_cast<Settings::LightIntensity>(i);
+
+                if (static_cast<int>(renderSettings.lightIntensity) == i)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
+
         ImGui::End();
     }
 }
