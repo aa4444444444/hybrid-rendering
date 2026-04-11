@@ -155,7 +155,7 @@ namespace Utility {
         glGenTextures(1, &textureID);
 
         int width, height, nrComponents;
-        unsigned char* data = stbi_load(path.data(), &width, &height, &nrComponents, 0);
+        float* data = stbi_loadf(path.data(), &width, &height, &nrComponents, 0);
         if (data)
         {
             GLenum format;
@@ -287,12 +287,13 @@ namespace Utility {
         /* ==============================================================================
         G Buffer Render Mode dropdown
         =============================================================================== */
-        const std::array<std::string, 5> gBufferRenderModes{
+        const std::array<std::string, 6> gBufferRenderModes{
             "Textures",
             "Position",
             "Normals",
             "Albedo",
             "Specular",
+            "Motion"
         };
 
         const std::string gBufferRenderModePreview{ gBufferRenderModes[static_cast<int>(renderSettings.gBufferRenderMode)] };

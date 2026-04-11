@@ -16,8 +16,6 @@ uniform float phiColor;
 uniform float phiNormal;
 uniform float phiDepth;
 
-
-
 void main()
 {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);

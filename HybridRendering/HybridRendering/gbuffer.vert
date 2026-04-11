@@ -17,8 +17,7 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
-// TODO: Do stuff with prevModel when objects start moving
-// uniform mat4 prevModel;
+uniform mat4 prevModel;
 uniform mat4 prevView;
 uniform mat4 prevProjection;
 
@@ -28,8 +27,8 @@ void main()
 
     mat3 normalMatrix = transpose(inverse(mat3(model)));
 
-    vec4 currPos = projection * view * worldPos;
-    vec4 prevPos = prevProjection * prevView * worldPos;
+    vec4 currPos = projection * view * model * vec4(aPos, 1.0);
+    vec4 prevPos = prevProjection * prevView * prevModel * vec4(aPos, 1.0);
 
     FragPos = worldPos.xyz; 
     TexCoords = aTexCoords;

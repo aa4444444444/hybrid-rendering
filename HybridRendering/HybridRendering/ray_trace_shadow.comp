@@ -41,7 +41,9 @@ struct Triangle {
     vec4 v1;
     vec4 v2;
     vec4 normal;
-    vec4 diffuseColor;
+    vec4 diffuseColor0;
+    vec4 diffuseColor1;
+    vec4 diffuseColor2;
     uint id;
     uint materialID;
     uint pad0;

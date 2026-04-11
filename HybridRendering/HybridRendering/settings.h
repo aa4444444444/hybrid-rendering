@@ -16,6 +16,7 @@ namespace Settings {
 		normals, // 2
 		albedo, // 3
 		spec, // 4
+		motion, // 5
 		num_options,
 	};
 
@@ -90,10 +91,10 @@ namespace Settings {
 		DeferredShadingRenderMode deferredShadingRenderMode { DeferredShadingRenderMode::texture };
 		SVGFRenderMode svgfRenderMode{ SVGFRenderMode::on };
 		BVHRenderMode bvhRenderMode{ BVHRenderMode::on };
-		LightIntensity lightIntensity{ LightIntensity::zero };
+		LightIntensity lightIntensity{ LightIntensity::five };
 		bool enableMouseLook{ false };
 
-		Camera camera{ glm::vec3(0.0f, 0.0f, 3.0f) };
+		Camera camera{ glm::vec3(0.0f, 1.5f, 0.0f) };
 
 		float lastX{ Constants::SCR_WIDTH / 2.0f };
 		float lastY{ Constants::SCR_HEIGHT / 2.0f };

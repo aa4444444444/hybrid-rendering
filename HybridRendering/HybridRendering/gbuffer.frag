@@ -16,6 +16,7 @@ in vec4 PrevClipPos;
 // 2 ==> Normals
 // 3 ==> Albedo
 // 4 ==> Specular
+// 5 ==> Motion
 uniform int renderingMode;
 
 uniform vec3 CameraPosition;
@@ -44,6 +45,14 @@ void main()
     // also store the per-fragment normals into the gbuffer
     gNormal = normalize(Normal);
 
+    float Depth = distance(CameraPosition, FragPos);
+    float DepthDerivative = max(abs(dFdx(Depth)), abs(dFdy(Depth)));
+
+    // also store the motion / depth vector
+    vec2 motion = computeMotionVec(PrevClipPos, CurrClipPos);
+
+    FragMotionVec = vec4(motion, Depth, DepthDerivative);
+
     if(renderingMode == 1){
         gAlbedoSpec = vec4(FragPos, 1.0f);
     } else if(renderingMode == 2){
@@ -52,6 +61,10 @@ void main()
         gAlbedoSpec = vec4(texture(texture_diffuse1, TexCoords).rgb, 1.0f);
     } else if(renderingMode == 4){
         gAlbedoSpec = vec4(1.0f, 1.0f, 1.0f, texture(texture_specular1, TexCoords).r);
+    } else if(renderingMode == 5){
+        vec2 visMotion = (PrevClipPos.xy / PrevClipPos.w) - (CurrClipPos.xy / CurrClipPos.w);
+        visMotion = abs(visMotion) * 50.0;
+        gAlbedoSpec = vec4(visMotion, 0.0, 1.0);
     } else { // Default to rendering texture 
         // and the diffuse per-fragment color
         gAlbedoSpec.rgb = texture(texture_diffuse1, TexCoords).rgb;
@@ -59,13 +72,5 @@ void main()
         // store specular intensity in gAlbedoSpec's alpha component
         gAlbedoSpec.a = texture(texture_specular1, TexCoords).r;
     }
-    
-    
 
-    float Depth = distance(CameraPosition, FragPos);
-    float DepthDerivative = max(abs(dFdx(Depth)), abs(dFdy(Depth)));
-
-    // also store the motion / depth vector
-    vec2 motion = computeMotionVec(PrevClipPos, CurrClipPos);
-    FragMotionVec = vec4(motion, Depth, DepthDerivative);
 }

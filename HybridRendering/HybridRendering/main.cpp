@@ -25,6 +25,7 @@
 #include "shader.h"
 #include "utility.h"
 #include "triangle_gpu.h"
+#include "baked_triangle.h"
 #include "material_gpu.h"
 #define TINYBVH_IMPLEMENTATION
 #include "tiny_bvh.h"
@@ -49,6 +50,7 @@ float lastFrame{ 0.0f };
 static uint32_t nextID{ 0 };
 
 // Material IDs
+constexpr uint32_t MAT_SPONZA{ 0 };
 constexpr uint32_t MAT_BACKPACK{ 0 };
 constexpr uint32_t MAT_FLOOR{ 1 };
 
@@ -164,31 +166,32 @@ int main() {
     PLOGD << "Loading backpack model"; 
     std::chrono::steady_clock::time_point model_begin = std::chrono::steady_clock::now();
     Model backpackModel("resources/objects/backpack/backpack.obj");
-    //Model backpackModel("resources/objects/main_sponza/NewSponza_Main_glTF_003.gltf");
+    //Model backpackModel("resources/objects/sponza-glTF/Sponza.gltf");
     std::chrono::steady_clock::time_point model_end = std::chrono::steady_clock::now();
     PLOGI << "Model loaded: " << backpackModel.meshes.size() << " mesh(es) in " <<
         std::chrono::duration_cast<std::chrono::milliseconds>(model_end - model_begin).count() << "[ms]";
 
     // Object positions
     std::vector<glm::vec3> objectPositions{};
-    objectPositions.emplace_back(-3.0, -0.5, -3.0);
-    objectPositions.emplace_back(0.0, -0.5, -3.0);
-    objectPositions.emplace_back(3.0, -0.5, -3.0);
-    objectPositions.emplace_back(-3.0, -0.5, 0.0);
-    objectPositions.emplace_back(0.0, -0.5, 0.0);
-    objectPositions.emplace_back(3.0, -0.5, 0.0);
-    objectPositions.emplace_back(-3.0, -0.5, 3.0);
-    objectPositions.emplace_back(0.0, -0.5, 3.0);
-    objectPositions.emplace_back(3.0, -0.5, 3.0);
+    //objectPositions.emplace_back(-3.0, -0.5, -3.0);
+    //objectPositions.emplace_back(0.0, -0.5, -3.0);
+    //objectPositions.emplace_back(3.0, -0.5, -3.0);
+    //objectPositions.emplace_back(-3.0, -0.5, 0.0);
+    //objectPositions.emplace_back(0.0, -0.5, 0.0);
+    //objectPositions.emplace_back(3.0, -0.5, 0.0);
+    //objectPositions.emplace_back(-3.0, -0.5, 3.0);
+    //objectPositions.emplace_back(0.0, -0.5, 3.0);
+    //objectPositions.emplace_back(3.0, -0.5, 3.0);
+    
+    // Sponza
+    objectPositions.emplace_back(0.0, 0.0, 0.0);
 
     // Object model transforms
     std::vector<glm::mat4> objectTransforms{};
     for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
         glm::mat4 model{ glm::mat4(1.0f) }; 
         model = glm::translate(model, objectPositions[i]);
-        model = glm::scale(model, glm::vec3(0.3f));
-        //model = glm::scale(model, glm::vec3(1.5f));
-        
+        //model = glm::scale(model, glm::vec3(0.3f));        
         
         objectTransforms.push_back(model);
     }
@@ -213,6 +216,8 @@ int main() {
     // For the floor we use a neutral light grey (no diffuse texture on the
     // floor mesh — the floor draws with a manual OpenGL texture).
     const glm::vec4 floorDiffuseBaked{ 0.85f, 0.85f, 0.85f, 1.0f };
+
+    std::vector<BakedTriangle> bakedTriangles{};
     
     // Contains the triangles in the scene that will get passed to the GPU in an SSBO
     std::vector<TriangleGPU> gpuTriangles{};
@@ -224,9 +229,11 @@ int main() {
     std::vector<tinybvh::bvhvec4> bvhVerts{};
 
     // Lambda function that pushes a triangle to both gpuTriangles and bvhVerts
-    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, const glm::vec4& diffuse, uint32_t id, uint32_t materialID)
+    auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, 
+                            const glm::vec4& diffuse0, const glm::vec4& diffuse1, const glm::vec4& diffuse2, 
+                            uint32_t id, uint32_t materialID)
     {
-        gpuTriangles.emplace_back(v0, v1, v2, normal, diffuse, id, materialID);
+        gpuTriangles.emplace_back(v0, v1, v2, normal, diffuse0, diffuse1, diffuse2, id, materialID);
         bvhVerts.push_back({ v0.x, v0.y, v0.z, 0.0f });
         bvhVerts.push_back({ v1.x, v1.y, v1.z, 0.0f });
         bvhVerts.push_back({ v2.x, v2.y, v2.z, 0.0f });
@@ -261,23 +268,30 @@ int main() {
                 glm::vec4 wv0 = M * glm::vec4(a.Position, 1.0f);
                 glm::vec4 wv1 = M * glm::vec4(b.Position, 1.0f);
                 glm::vec4 wv2 = M * glm::vec4(c.Position, 1.0f);
-                glm::vec4 wN = glm::normalize(normalM * glm::vec4(a.Normal, 0.0f));
+                glm::vec3 avgNormal = glm::normalize(a.Normal + b.Normal + c.Normal);
+                glm::vec4 wN = glm::normalize(normalM * glm::vec4(avgNormal, 0.0f));
 
-                // Bake diffuse colour: centroid UV bilinear sample
-                glm::vec2 centroidUV = (a.TexCoords + b.TexCoords + c.TexCoords) / 3.0f;
-                glm::vec3 colour{ 0.8f, 0.8f, 0.8f }; // neutral fallback
+                // diffuse color
+                glm::vec3 color0{ 0.8f, 0.8f, 0.8f }; // neutral fallback
+                glm::vec3 color1{ 0.8f, 0.8f, 0.8f }; // neutral fallback
+                glm::vec3 color2{ 0.8f, 0.8f, 0.8f }; // neutral fallback
                 if (diffTex && diffTex->valid()) {
-                    colour = diffTex->sample(centroidUV);
+                    color0 = diffTex->sample(a.TexCoords);
+                    color1 = diffTex->sample(b.TexCoords);
+                    color2 = diffTex->sample(c.TexCoords);
                 }
 
                 pushTriangle(wv0, wv1, wv2, wN,
-                    glm::vec4(colour, 1.0f),
+                    glm::vec4(color0, 1.0f),
+                    glm::vec4(color1, 1.0f),
+                    glm::vec4(color2, 1.0f),
                     ++nextID, MAT_BACKPACK);
             }
         }
     }
 
     // Floor
+    /*
     glm::mat4 floorNormalModel{ glm::transpose(glm::inverse(glm::mat3(floorModel))) };
     for (unsigned int j{ 0 }; j < Utility::floorVertices.size(); j += (8 * 3)) {
         pushTriangle(
@@ -286,10 +300,13 @@ int main() {
             floorModel * glm::vec4{ Utility::floorVertices[j + 16], Utility::floorVertices[j + 17], Utility::floorVertices[j + 18], 1.0f },
             glm::normalize(floorNormalModel * glm::vec4{ Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f }),
             floorDiffuseBaked,
+            floorDiffuseBaked,
+            floorDiffuseBaked,
             ++nextID, 
             MAT_FLOOR
         );
     }
+    */
 
     for (auto& [path, tex] : cpuTextureCache) {
         tex.free();
@@ -353,8 +370,9 @@ int main() {
     // Upload Material SSBO
     std::vector<MaterialGPU> materials{};
     // albedo, reflectivity, roughness
-    materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 1.0f, 0.0f); // backpack
-    materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 1.0f, 0.0f); // floor
+    //materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 1.0f, 0.0f); // backpack
+    materials.emplace_back(glm::vec3(0.8f, 0.8f, 0.8f), 0.3f, 0.7f); // sponza
+    //materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 1.0f, 0.0f); // floor
 
     unsigned int materialSSBO{};
     glGenBuffers(1, &materialSSBO);
@@ -562,7 +580,8 @@ int main() {
     }
     */
     
-    lightPositions.emplace_back(0.0f, 0.05f, 2.0f);
+    //lightPositions.emplace_back(0.0f, 0.05f, 2.0f); // Backpacks
+    lightPositions.emplace_back(0.0f, 3.5f, 0.0f); // Sponza
     lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
     shaderLightingPass.use();
@@ -573,7 +592,9 @@ int main() {
     shaderLightingPass.setInt("reflectionMap", 4);
 
     // The previous frames MVP matrices used for temporal accumulation
-    // glm::mat4 prevModel{ glm::mat4(1.0f) };
+    // Projection and View matrices are consistent for each object in the scene, but we need
+    // each object to have its own unique model matrix
+    std::vector<glm::mat4> prevModels(objectPositions.size(), glm::mat4(1.0f));
     glm::mat4 prevView{ glm::mat4(1.0f) };
     glm::mat4 prevProjection{ glm::mat4(1.0f) };
 
@@ -616,7 +637,9 @@ int main() {
             // set it equal to the current MVP matrices
             prevProjection = projection;
             prevView = view;
-            //prevModel = model;
+            for (unsigned int i = 0; i < objectPositions.size(); ++i) {
+                prevModels[i] = objectTransforms[i];
+            }
         }
 
         shaderGeometryPass.use();
@@ -633,11 +656,13 @@ int main() {
         for (unsigned int i{ 0 }; i < objectPositions.size(); ++i)
         {
             shaderGeometryPass.setMat4("model", objectTransforms[i]);
-
+            shaderGeometryPass.setMat4("prevModel", prevModels[i]);
             backpackModel.Draw(shaderGeometryPass);
         }
 
         // Drawing the floor
+        
+        /*
         // bind diffuse map
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, floorDiffuseMap);
@@ -650,8 +675,13 @@ int main() {
 
         Utility::renderFloor();
 
+        */
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+        for (unsigned int i = 0; i < objectPositions.size(); ++i) {
+            prevModels[i] = objectTransforms[i];
+        }
         prevView = view;
         prevProjection = projection;
 
@@ -990,6 +1020,9 @@ int main() {
         if (firstFrame) {
             firstFrame = false;
         }
+
+        objectPositions[0] = objectPositions[0] + glm::vec3(0.0005, 0.0, 0.0);
+        objectTransforms[0] = glm::translate(glm::mat4(1.0f), objectPositions[0]);
 
     }
     PLOGD << "Render Loop Terminated";
