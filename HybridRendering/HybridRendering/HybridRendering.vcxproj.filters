@@ -110,6 +110,12 @@
     <ClInclude Include="material_gpu.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="baked_triangle.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="instance_gpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="gbuffer.frag">

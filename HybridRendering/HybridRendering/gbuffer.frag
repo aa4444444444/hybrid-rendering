@@ -60,11 +60,16 @@ void main()
     } else if(renderingMode == 3){
         gAlbedoSpec = vec4(texture(texture_diffuse1, TexCoords).rgb, 1.0f);
     } else if(renderingMode == 4){
-        gAlbedoSpec = vec4(1.0f, 1.0f, 1.0f, texture(texture_specular1, TexCoords).r);
+        float spec = texture(texture_specular1, TexCoords).r;
+        gAlbedoSpec = vec4(vec3(spec), 1.0);
     } else if(renderingMode == 5){
         vec2 visMotion = (PrevClipPos.xy / PrevClipPos.w) - (CurrClipPos.xy / CurrClipPos.w);
         visMotion = abs(visMotion) * 50.0;
         gAlbedoSpec = vec4(visMotion, 0.0, 1.0);
+    } else if(renderingMode == 6) {
+        float ndcDepth = CurrClipPos.z / CurrClipPos.w;
+        float depth = ndcDepth * 0.5 + 0.5;
+        gAlbedoSpec = vec4(vec3(depth), 1.0);
     } else { // Default to rendering texture 
         // and the diffuse per-fragment color
         gAlbedoSpec.rgb = texture(texture_diffuse1, TexCoords).rgb;

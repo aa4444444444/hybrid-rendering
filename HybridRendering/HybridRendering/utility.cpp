@@ -287,13 +287,14 @@ namespace Utility {
         /* ==============================================================================
         G Buffer Render Mode dropdown
         =============================================================================== */
-        const std::array<std::string, 6> gBufferRenderModes{
+        const std::array<std::string, 7> gBufferRenderModes{
             "Textures",
             "Position",
             "Normals",
             "Albedo",
             "Specular",
-            "Motion"
+            "Motion",
+            "Depth"
         };
 
         const std::string gBufferRenderModePreview{ gBufferRenderModes[static_cast<int>(renderSettings.gBufferRenderMode)] };

@@ -27,6 +27,7 @@
 #include "triangle_gpu.h"
 #include "baked_triangle.h"
 #include "material_gpu.h"
+#include "instance_gpu.h"
 #define TINYBVH_IMPLEMENTATION
 #include "tiny_bvh.h"
 #include "model.h"
@@ -214,20 +215,119 @@ int main() {
         };
 
     // For the floor we use a neutral light grey (no diffuse texture on the
-    // floor mesh — the floor draws with a manual OpenGL texture).
+    // floor mesh - the floor draws with a manual OpenGL texture).
     const glm::vec4 floorDiffuseBaked{ 0.85f, 0.85f, 0.85f, 1.0f };
 
     std::vector<BakedTriangle> bakedTriangles{};
-    
-    // Contains the triangles in the scene that will get passed to the GPU in an SSBO
-    std::vector<TriangleGPU> gpuTriangles{};
+
+    // Bake per-vertex colors and object-space geometry once before the render loop. 
+    // Since texture sampling is expensive, we don't have to do it after this point. 
+    for (unsigned int inst = 0; inst < objectPositions.size(); ++inst) {
+        for (const Mesh& mesh : backpackModel.meshes) {
+            const auto& verts = mesh.vertices;
+            const auto& idxList = mesh.indices;
+
+            CpuTexture* diffTex = nullptr;
+            for (const Texture& tex : mesh.textures) {
+                if (tex.type == "texture_diffuse") {
+                    std::string fullPath = backpackModel.directory + "/" + tex.path;
+                    diffTex = &getCpuTexture(fullPath);
+                    break;
+                }
+            }
+
+            for (size_t f = 0; f < idxList.size(); f += 3) {
+                const Vertex& a = verts[idxList[f]];
+                const Vertex& b = verts[idxList[f + 1]];
+                const Vertex& c = verts[idxList[f + 2]];
+
+                glm::vec3 color0{ 0.8f, 0.8f, 0.8f };
+                glm::vec3 color1{ 0.8f, 0.8f, 0.8f };
+                glm::vec3 color2{ 0.8f, 0.8f, 0.8f };
+                if (diffTex && diffTex->valid()) {
+                    color0 = diffTex->sample(a.TexCoords);
+                    color1 = diffTex->sample(b.TexCoords);
+                    color2 = diffTex->sample(c.TexCoords);
+                }
+
+                glm::vec3 avgNormal = glm::normalize(a.Normal + b.Normal + c.Normal);
+
+                BakedTriangle bt{};
+                bt.lv0 = a.Position;
+                bt.lv1 = b.Position;
+                bt.lv2 = c.Position;
+                bt.lNormal = avgNormal;
+                bt.diffuse0 = glm::vec4(color0, 1.0f);
+                bt.diffuse1 = glm::vec4(color1, 1.0f);
+                bt.diffuse2 = glm::vec4(color2, 1.0f);
+                bt.materialID = MAT_BACKPACK;
+                bt.instanceIndex = inst;
+                bt.id = ++nextID;
+                bakedTriangles.push_back(bt);
+            }
+        }
+    }
+
+    // Build the BLAS in object space.
+    // All instances of the same mesh should share one BLAS.
+    // https://cg.informatik.uni-freiburg.de/intern/seminar/raytracing%20-%20Keller%20-%20SIGGRAPH%202019%202%20Acceleration%20Data%20Structures.pdf
+    // The instance SSBO tells teh shader which transform to apply per instance
+    std::vector<TriangleGPU> blasTriangles{};
 
     // bvhvec4 triples that TinyBVH's builder consumes. 
-    // Triangle i in gpuTriangles corresponds to vertices [i*3 ... i*3+2] in bvhVerts
+    // Triangle i in gpuTriangles corresponds to vertices [i*3 ... i*3+2] in blasVerts
     // After the BVH build, TinyBVH provides a primIdx[] remapping array.
     // We use it to reorder gpuTriangles into sortedTriangles so that the triangle SSBO is in the order the BVH nodes expect.
-    std::vector<tinybvh::bvhvec4> bvhVerts{};
+    std::vector<tinybvh::bvhvec4> blasVerts{};
 
+    blasTriangles.reserve(bakedTriangles.size());
+    blasVerts.reserve(bakedTriangles.size() * 3);
+
+    for (const BakedTriangle& bt : bakedTriangles) {
+        glm::vec4 ov0{ bt.lv0, 1.0f };
+        glm::vec4 ov1{ bt.lv1, 1.0f };
+        glm::vec4 ov2{ bt.lv2, 1.0f };
+        glm::vec4 oN{ bt.lNormal, 0.0f };
+
+        blasTriangles.emplace_back(ov0, ov1, ov2, oN,
+            bt.diffuse0, bt.diffuse1, bt.diffuse2,
+            bt.id, bt.materialID);
+
+        blasVerts.push_back({ bt.lv0.x, bt.lv0.y, bt.lv0.z, 0.0f });
+        blasVerts.push_back({ bt.lv1.x, bt.lv1.y, bt.lv1.z, 0.0f });
+        blasVerts.push_back({ bt.lv2.x, bt.lv2.y, bt.lv2.z, 0.0f });
+    }
+
+    const size_t gpuTrianglesSize = blasTriangles.size();
+
+    // Helper lambda: rebuilds gpuTriangles and bvhVerts from bakedTriangles using current objectTransforms. 
+    // Called every frame.
+    /*
+    auto rebuildTriangles = [&]() {
+        for (size_t i = 0; i < bakedTriangles.size(); ++i) {
+            const BakedTriangle& bt = bakedTriangles[i];
+            const glm::mat4& M = objectTransforms[bt.instanceIndex];
+            glm::mat4 normalM = glm::transpose(glm::inverse(glm::mat3(M)));
+
+            glm::vec4 wv0 = M * glm::vec4(bt.lv0, 1.0f);
+            glm::vec4 wv1 = M * glm::vec4(bt.lv1, 1.0f);
+            glm::vec4 wv2 = M * glm::vec4(bt.lv2, 1.0f);
+            glm::vec4 wN = glm::normalize(normalM * glm::vec4(bt.lNormal, 0.0f));
+
+            gpuTriangles[i] = TriangleGPU(wv0, wv1, wv2, wN,
+                bt.diffuse0, bt.diffuse1, bt.diffuse2,
+                bt.id, bt.materialID);
+
+            // Overwrite in-place — indices must stay stable for Refit()
+            bvhVerts[i * 3 + 0] = { wv0.x, wv0.y, wv0.z, 0.0f };
+            bvhVerts[i * 3 + 1] = { wv1.x, wv1.y, wv1.z, 0.0f };
+            bvhVerts[i * 3 + 2] = { wv2.x, wv2.y, wv2.z, 0.0f };
+        }
+    };
+    rebuildTriangles();
+    */
+
+    /*
     // Lambda function that pushes a triangle to both gpuTriangles and bvhVerts
     auto pushTriangle = [&](const glm::vec4& v0, const glm::vec4& v1, const glm::vec4& v2, const glm::vec4& normal, 
                             const glm::vec4& diffuse0, const glm::vec4& diffuse1, const glm::vec4& diffuse2, 
@@ -289,6 +389,8 @@ int main() {
             }
         }
     }
+    */
+
 
     // Floor
     /*
@@ -314,7 +416,18 @@ int main() {
     cpuTextureCache.clear();
     PLOGD << "CPU texture data freed after baking";
 
-    const uint32_t triCount = static_cast<uint32_t>(gpuTriangles.size());
+    const uint32_t triCount = static_cast<uint32_t>(blasTriangles.size());
+
+    // Build the BLAS once in object space. 
+    PLOGD << "Building BLAS (TinyBVH BVH_GPU, object space) over " << triCount << " triangles";
+    std::chrono::steady_clock::time_point bvh_begin = std::chrono::steady_clock::now();
+
+    tinybvh::BVH_GPU gpuBVH;
+    gpuBVH.Build(blasVerts.data(), triCount);
+
+    std::chrono::steady_clock::time_point bvh_end = std::chrono::steady_clock::now();
+    PLOGI << "BLAS built: " << gpuBVH.usedNodes << " nodes in " <<
+        std::chrono::duration_cast<std::chrono::milliseconds>(bvh_end - bvh_begin).count() << "[ms]";
 
     // TinyBVH uses BVH_GPU layout (Aila & Laine 2009)
     // https://research.nvidia.com/sites/default/files/pubs/2009-08_Understanding-the-Efficiency/aila2009hpg_paper.pdf
@@ -327,6 +440,7 @@ int main() {
     // gpuBVH.usedNodes is the number of valid entries in bvhNode[]
     // gpuBVH.bvh.primIdx maps BVH-order index back to the original triangle index in gpuTriangles bvhVerts.  
     // We use this to reorder the triangle SSBO.
+    /*
     PLOGD << "Building BVH (TinyBVH BVH_GPU) over " << triCount << " triangles";
     std::chrono::steady_clock::time_point bvh_begin = std::chrono::steady_clock::now();
     
@@ -337,12 +451,14 @@ int main() {
 
     PLOGI << "BVH built: " << gpuBVH.usedNodes << " nodes in " << 
         std::chrono::duration_cast<std::chrono::milliseconds>(bvh_end - bvh_begin).count() << "[ms]";
+    */
+
 
     // Reorder gpuTriangles to match the BVH's internal primitive order.
     // The shader indexes into the triangle SSBO using leaf.firstTri, which refers to positions in this BVH-reordered array.
     std::vector<TriangleGPU> sortedTriangles(triCount);
     for (uint32_t i = 0; i < triCount; ++i) {
-        sortedTriangles[i] = gpuTriangles[gpuBVH.bvh.primIdx[i]];
+        sortedTriangles[i] = blasTriangles[gpuBVH.bvh.primIdx[i]];
     }
 
     // Upload triangle SSBO
@@ -365,6 +481,25 @@ int main() {
         gpuBVH.bvhNode,
         GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, bvhSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Instance SSBO has one entry per object (mesh) instance, updated every frame. 
+    // The shader transforms each ray into object space using the inverse transform,
+    // traverses the shared BLAS, then transforms resulsts back to world space. 
+    std::vector<InstanceGPU> instanceData(objectPositions.size());
+    for (size_t i = 0; i < objectPositions.size(); ++i) {
+        instanceData[i].transform = objectTransforms[i];
+        instanceData[i].inverseTranspose = glm::transpose(glm::inverse(objectTransforms[i]));
+    }
+
+    unsigned int instanceSSBO{};
+    glGenBuffers(1, &instanceSSBO);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, instanceSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+        instanceData.size() * sizeof(InstanceGPU),
+        instanceData.data(),
+        GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, instanceSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // Upload Material SSBO
@@ -581,7 +716,8 @@ int main() {
     */
     
     //lightPositions.emplace_back(0.0f, 0.05f, 2.0f); // Backpacks
-    lightPositions.emplace_back(0.0f, 3.5f, 0.0f); // Sponza
+    //lightPositions.emplace_back(0.0f, 3.5f, 0.0f); // Sponza
+    lightPositions.emplace_back(0.0, 0.0, 8.0f);
     lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
     shaderLightingPass.use();
@@ -685,6 +821,18 @@ int main() {
         prevView = view;
         prevProjection = projection;
 
+        // Update instance SSBO with current transforms
+        for (size_t i = 0; i < objectPositions.size(); ++i) {
+            instanceData[i].transform = objectTransforms[i];
+            instanceData[i].inverseTranspose = glm::transpose(glm::inverse(objectTransforms[i]));
+        }
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, instanceSSBO);
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+            instanceData.size() * sizeof(InstanceGPU),
+            instanceData.data());
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, instanceSSBO);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        
         // Shadow Ray Tracer Pass
         for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
         {
@@ -1013,7 +1161,7 @@ int main() {
         glfwPollEvents();
         
         if (firstRenderPass) {
-            PLOGD << "Num Triangles in Scene: " << gpuTriangles.size();
+            PLOGD << "Num Triangles in Scene: " << blasTriangles.size();
             firstRenderPass = false;
         }
 

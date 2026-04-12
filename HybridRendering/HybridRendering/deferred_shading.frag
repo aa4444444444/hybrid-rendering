@@ -68,10 +68,15 @@
             }
         }
 
-        vec3 reflection = texture(reflectionMap, TexCoords).rgb;
+        vec3 finalColor = lighting;
 
-        float reflectWeight = clamp(Specular, 0.0, 1.0);
-        vec3 finalColor = lighting + reflection * reflectWeight;
+        if(false){
+            vec3 reflection = texture(reflectionMap, TexCoords).rgb;
+
+            float reflectWeight = clamp(Specular, 0.0, 1.0);
+            vec3 finalColor = lighting + reflection * reflectWeight;
+        }
+        
 
         if (renderingMode == 0) {
             FragColor = vec4(finalColor, 1.0);
