@@ -47,9 +47,8 @@ struct BVHNode {
     vec4 rmaxFirst;  // xyz = right child aabbMax, w = firstTri
 };
 
-layout(std430, binding = 4) buffer BVHNodes {
-    BVHNode bvhNodes[];
-};
+layout(std430, binding = 4) buffer BackpackBVHNodes { BVHNode backpackNodes[]; };
+layout(std430, binding = 7) buffer FloorBVHNodes    { BVHNode floorNodes[]; };
 
 // Materials
 struct Material {
@@ -67,7 +66,9 @@ layout(std430, binding = 5) buffer Materials {
 // One entry per object instance, updated every frame. 
 struct Instance {
     mat4 transform;
+    mat4 worldToObject;
     mat4 inverseTranspose;
+    uvec4 blasInfo;
 };
 layout(std430, binding = 6) buffer Instances { Instance instances[]; };
 
@@ -125,106 +126,57 @@ float intersectTriangle(vec3 ro, vec3 rd, Triangle tri, out float u, out float v
     return (t > 1e-4) ? t : -1.0;
 }
 
-int traverseBVHClosest(vec3 origin, vec3 dir, out float tHit, out float hitU, out float hitV) {
-    vec3 invDir = 1.0 / dir;
-    tHit = 1e30;
-    int hitTriIdx = -1;
-
-    int stack[BVH_STACK_SIZE];
-    int stackPtr = 0;
-    stack[stackPtr++] = 0;
-
-    while (stackPtr > 0) {
-        BVHNode node = bvhNodes[stack[--stackPtr]];
-
-        uint left = floatBitsToUint(node.lminLeft.w);
-        uint right = floatBitsToUint(node.lmaxRight.w);
-        uint triCount = floatBitsToUint(node.rminCount.w);
-        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
-
-        if (triCount > 0u) {
-            // Leaf — test each triangle for closest hit
-            for (uint i = firstTri; i < firstTri + triCount; ++i) {
-                float u = 0.0f;
-                float v = 0.0f;
-                float t = intersectTriangle(origin, dir, tris[i], u, v);
-                if (t > 0.0 && t < tHit) {
-                    tHit = t;
-                    hitTriIdx = int(i);
-                    hitU = u;
-                    hitV = v;
-                }
-            }
-        } else {
-            // Internal node — test both child AABBs
-            float tL, tR;
-            bool hitLeft = intersectAABB(origin, invDir, node.lminLeft.xyz, node.lmaxRight.xyz, tHit, tL);
-            bool hitRight = intersectAABB(origin, invDir, node.rminCount.xyz, node.rmaxFirst.xyz, tHit, tR);
-
-            // Push farther child first so closer is visited first
-            if (hitLeft && hitRight) {
-                if (tL < tR) {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
-                } else {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
-                }
-            } else if (hitLeft)  { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);  }
-            else if  (hitRight)  { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right); }
-        }
-    }
-
-    return hitTriIdx;
-}
-
 // Returns the index of the closest hit triangle (in the sorted SSBO), or -1.
 // Also returns the object-space hit distance tHit and barycentrics hitU/hitV.
-int traverseBLAS(vec3 origin, vec3 dir,
-                 inout float tHit, out float hitU, out float hitV) {
-    vec3 invDir   = 1.0 / dir;
-    int  hitIdx   = -1;
-
-    int stack[BVH_STACK_SIZE];
-    int stackPtr = 0;
-    stack[stackPtr++] = 0;
-
-    while (stackPtr > 0) {
-        BVHNode node = bvhNodes[stack[--stackPtr]];
-        uint left     = floatBitsToUint(node.lminLeft.w);
-        uint right    = floatBitsToUint(node.lmaxRight.w);
-        uint triCount = floatBitsToUint(node.rminCount.w);
-        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
-
+int traverseBLAS(vec3 origin, vec3 dir, inout float tHit,
+                 out float hitU, out float hitV,
+                 uint blasOffset, uint nodeSet) {
+    vec3 invDir = 1.0/dir;
+    int hitIdx = -1;
+    int stack[BVH_STACK_SIZE]; 
+    int sp = 0; 
+    stack[sp++] = 0;
+    while (sp > 0) {
+        int ni = stack[--sp];
+        BVHNode n = (nodeSet == 0u) ? backpackNodes[ni] : floorNodes[ni];
+        uint left = floatBitsToUint(n.lminLeft.w), right = floatBitsToUint(n.lmaxRight.w);
+        uint triCount = floatBitsToUint(n.rminCount.w), firstTri = floatBitsToUint(n.rmaxFirst.w);
         if (triCount > 0u) {
-            for (uint i = firstTri; i < firstTri + triCount; ++i) {
-                float u, v;
-                float t = intersectTriangle(origin, dir, tris[i], u, v);
-                if (t > 0.0 && t < tHit) {
-                    tHit   = t;
-                    hitIdx = int(i);
-                    hitU   = u;
-                    hitV   = v;
+            for (uint i = firstTri; i < firstTri+triCount; ++i) {
+                float u,v,t = intersectTriangle(origin, dir, tris[blasOffset+i], u, v);
+                if (t > 0.0 && t < tHit) { 
+                    tHit = t; 
+                    hitIdx = int(blasOffset+i); 
+                    hitU = u; 
+                    hitV = v; 
                 }
             }
         } else {
             float tL, tR;
-            bool hL = intersectAABB(origin, invDir,
-                          node.lminLeft.xyz, node.lmaxRight.xyz, tHit, tL);
-            bool hR = intersectAABB(origin, invDir,
-                          node.rminCount.xyz, node.rmaxFirst.xyz, tHit, tR);
-            if (hL && hR) {
-                if (tL < tR) {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
+            bool hL = intersectAABB(origin, invDir, n.lminLeft.xyz, n.lmaxRight.xyz, tHit, tL);
+            bool hR = intersectAABB(origin, invDir, n.rminCount.xyz, n.rmaxFirst.xyz, tHit, tR);
+            if(hL && hR){
+                if(tL < tR){
+                    if(sp < BVH_STACK_SIZE)
+                        stack[sp++] = int(right);
+                    if(sp < BVH_STACK_SIZE)
+                        stack[sp++] = int(left);
                 } else {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
+                    if(sp < BVH_STACK_SIZE)
+                        stack[sp++] = int(left); 
+                    if(sp < BVH_STACK_SIZE)
+                        stack[sp++] = int(right);
                 }
-            } else if (hL) { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);  }
-            else if  (hR) { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right); }
+            } else if(hL) {
+                if(sp < BVH_STACK_SIZE)
+                    stack[sp++] = int(left);
+            } else if (hR) {
+                if(sp < BVH_STACK_SIZE)
+                    stack[sp++] = int(right);
+            }
         }
     }
+
     return hitIdx;
 }
 
@@ -233,68 +185,44 @@ int traverseBLAS(vec3 origin, vec3 dir,
 // finds the closest hit in the BLAS, then converts the hit back to world space.
 // Returns the triangle index of the overall closest hit, or -1 on miss.
 // Also outputs world-space hit position, world-space normal, and barycentrics.
-int traverseTLAS(vec3 worldOrigin, vec3 worldDir,
-                 out vec3 worldHitPos, out vec3 worldHitNormal,
+int traverseTLAS(vec3 wOrigin, vec3 wDir,
+                 out vec3 wHitPos, out vec3 wHitNormal,
                  out float hitU, out float hitV) {
-    float bestT   = 1e30;
-    int   bestIdx = -1;
-    uint  bestInst = 0u;
+    float bestT = 1e30;
+    int bestIdx = -1; 
+    uint bestInst = 0u;
     float bestU = 0.0, bestV = 0.0;
-
     uint n = uint(instances.length());
     for (uint i = 0u; i < n; ++i) {
-        mat4 w2o = inverse(instances[i].transform);
+        vec3 oOrigin = (instances[i].worldToObject * vec4(wOrigin,1.0)).xyz;
+        vec3 oDir = (instances[i].worldToObject * vec4(wDir, 0.0)).xyz;
 
-        vec3 objOrigin = (w2o * vec4(worldOrigin, 1.0)).xyz;
-        vec3 objDir    = (w2o * vec4(worldDir,    0.0)).xyz;
-
-        // We pass bestT (world-space so far) converted to object-space magnitude as a conservative cull distance for this instance.
-        // For uniform scale S, object-space t = world-space t / S.
-        // For general transforms, convert the current best world endpoint
-        float objCullDist;
-        {
-            vec3 worldBest = worldOrigin + worldDir * bestT;
-            objCullDist = length((w2o * vec4(worldBest, 1.0)).xyz - objOrigin);
-        }
-
-        float tHit = objCullDist;
-        float u, v;
-        int idx = traverseBLAS(objOrigin, objDir, tHit, u, v);
-
+        // Cull with current best distance converted to object space
+        float oCull = length((instances[i].worldToObject * vec4(wOrigin + wDir * bestT, 1.0)).xyz - oOrigin);
+        float tHit = oCull; 
+        float u,v;
+        int idx = traverseBLAS(oOrigin, oDir, tHit, u, v, instances[i].blasInfo.x, instances[i].blasInfo.z);
         if (idx >= 0) {
-            // Convert object-space hit distance back to world space for comparison
-            vec3 objHitPos   = objOrigin + objDir * tHit;
-            vec3 worldHitPosCandidate = (instances[i].transform * vec4(objHitPos, 1.0)).xyz;
-            float worldT = length(worldHitPosCandidate - worldOrigin);
-
-            if (worldT < bestT) {
-                bestT    = worldT;
-                bestIdx  = idx;
-                bestInst = i;
-                bestU    = u;
-                bestV    = v;
+            vec3 wCand = (instances[i].transform * vec4(oOrigin + oDir * tHit, 1.0)).xyz;
+            float wT = length(wCand - wOrigin);
+            if (wT < bestT){ 
+                bestT = wT; 
+                bestIdx = idx; 
+                bestInst = i; 
+                bestU = u; 
+                bestV = v; 
             }
         }
     }
 
-    if (bestIdx < 0) return -1;
+    if (bestIdx < 0) 
+        return -1;
 
-    // Reconstruct world-space hit position and normal for the winning hit
-    mat4 w2o = inverse(instances[bestInst].transform);
-    vec3 objOrigin = (w2o * vec4(worldOrigin, 1.0)).xyz;
-    vec3 objDir    = (w2o * vec4(worldDir,    0.0)).xyz;
-
-    // Re-derive object-space hit position from the winning t
-    // (we stored world t; convert back to object space for the endpoint)
-    vec3 worldEnd   = worldOrigin + worldDir * bestT;
-    vec3 objHitPos  = (w2o * vec4(worldEnd, 1.0)).xyz;
-
-    worldHitPos = (instances[bestInst].transform * vec4(objHitPos, 1.0)).xyz;
-
-    // Transform object-space normal to world space using inverseTranspose
-    vec3 objNormal  = normalize(tris[bestIdx].normal.xyz);
-    worldHitNormal  = normalize((instances[bestInst].inverseTranspose * vec4(objNormal, 0.0)).xyz);
-
+    // Reconstruct world-space hit
+    vec3 oOrigin = (instances[bestInst].worldToObject * vec4(wOrigin, 1.0)).xyz;
+    vec3 oHit = (instances[bestInst].worldToObject * vec4(wOrigin + wDir * bestT, 1.0)).xyz;
+    wHitPos = (instances[bestInst].transform * vec4(oHit, 1.0)).xyz;
+    wHitNormal = normalize((instances[bestInst].inverseTranspose * vec4(normalize(tris[bestIdx].normal.xyz), 0.0)).xyz);
     hitU = bestU;
     hitV = bestV;
     return bestIdx;
@@ -363,32 +291,6 @@ void main(){
 
     // Also scale by the surface's own specular — highly specular surfaces show reflections more prominently
     reflectedColor *= specular;
-
-    /*
-    // Trace closest-hit reflection ray
-    float tHit, hitU, hitV;
-    int hitIdx = traverseBVHClosest(origin, reflectDir, tHit, hitU, hitV);
-
-    vec3 reflectedColor = vec3(0.0);
-
-    if (hitIdx >= 0) {
-        Triangle hitTri = tris[hitIdx];
-        Material hitMat = materials[hitTri.materialID];
-        vec3 hitPos = origin + reflectDir * tHit;
-        vec3 hitNorm = normalize(hitTri.normal.xyz);
-
-        float w = 1.0 - hitU - hitV;
-        vec3 diffuse = w * hitTri.diffuseColor0.xyz + hitU * hitTri.diffuseColor1.xyz + hitV * hitTri.diffuseColor2.xyz;
-
-        reflectedColor = shadeHit(hitPos, hitNorm, diffuse);
-
-        // Scale by the material's reflectivity so very reflective surfaces contribute more than dull ones
-        reflectedColor *= hitMat.reflectivity;
-    }
-
-    // Also scale by the surface's own specular — highly specular surfaces show reflections more prominently
-    reflectedColor *= specular;
-    */
 
     imageStore(gReflectionRaw, pixelCoords, vec4(reflectedColor, 1.0));
 }

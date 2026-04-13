@@ -70,11 +70,11 @@
 
         vec3 finalColor = lighting;
 
-        if(false){
+        if(true){
             vec3 reflection = texture(reflectionMap, TexCoords).rgb;
 
             float reflectWeight = clamp(Specular, 0.0, 1.0);
-            vec3 finalColor = lighting + reflection * reflectWeight;
+            finalColor = lighting + reflection * reflectWeight;
         }
         
 

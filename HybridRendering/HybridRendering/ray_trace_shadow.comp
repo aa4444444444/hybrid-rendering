@@ -64,14 +64,15 @@ struct BVHNode {
     vec4 rmaxFirst;  // xyz = right child aabbMax, w = firstTri
 };
 
-layout(std430, binding = 4) buffer BVHNodes {
-    BVHNode bvhNodes[];
-};
+layout(std430, binding = 4) buffer BackpackBVHNodes { BVHNode backpackNodes[]; };
+layout(std430, binding = 7) buffer FloorBVHNodes    { BVHNode floorNodes[]; };
 
 // One entry per object instance, updated every frame. 
 struct Instance {
     mat4 transform;
+    mat4 worldToObject;
     mat4 inverseTranspose;
+    uvec4 blasInfo;
 };
 layout(std430, binding = 6) buffer Instances { Instance instances[]; };
 
@@ -169,100 +170,48 @@ bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax, float maxDist, out
     return (tExit >= max(tEnter, 0.0)) && (tEnter < maxDist);
 }
 
-// Traverses the BVH
-// Taken from the Aila and Laine paper 
-bool traverseBVH(vec3 origin, vec3 dir, float maxDist) {
+bool traverseBLAS(vec3 origin, vec3 dir, float maxDist, uint blasOffset, uint nodeSet) {
     vec3 invDir = 1.0 / dir;
-
-    int stack[BVH_STACK_SIZE];
-    int stackPtr = 0;
-    stack[stackPtr++] = 0; // push root
-
-    while (stackPtr > 0) {
-        BVHNode node = bvhNodes[stack[--stackPtr]];
-
-        // Unpack the uint fields stored in the .w components
-        uint left = floatBitsToUint(node.lminLeft.w);
-        uint right = floatBitsToUint(node.lmaxRight.w);
-        uint triCount = floatBitsToUint(node.rminCount.w);
-        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
-
-        // Leaf: test each triangle in the node
+    int stack[BVH_STACK_SIZE]; 
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0) {
+        int ni = stack[--sp];
+        BVHNode n = (nodeSet == 0u) ? backpackNodes[ni] : floorNodes[ni];
+        uint left = floatBitsToUint(n.lminLeft.w);
+        uint right = floatBitsToUint(n.lmaxRight.w);
+        uint triCount = floatBitsToUint(n.rminCount.w);
+        uint firstTri = floatBitsToUint(n.rmaxFirst.w);
         if (triCount > 0u) {
-            for (uint i = firstTri; i < firstTri + triCount; ++i) {
-                if (intersectTriangle(origin, dir, tris[i], maxDist))
-                    return true;
-            }
-        } else {
-            // Internal node: test both child AABBs
-            // Both AABBs come from the single node we already loaded (Aila and Laine) no extra memory fetch needed.
-            // https://research.nvidia.com/sites/default/files/pubs/2009-08_Understanding-the-Efficiency/aila2009hpg_paper.pdf
-            float tLeft, tRight;
-            bool hitLeft = intersectAABB(origin, invDir, node.lminLeft.xyz, node.lmaxRight.xyz, maxDist, tLeft);
-            bool hitRight = intersectAABB(origin, invDir, node.rminCount.xyz, node.rmaxFirst.xyz, maxDist, tRight);
-
-            // Visiting the closer child first improves early-out frequency, since earlier we stop as soon as we find the first intersection.
-            // Push the farther child first so the closer one sits on top of the stack
-            if (hitLeft && hitRight) {
-                if (tLeft < tRight) {
-                    if (stackPtr < BVH_STACK_SIZE) 
-                        stack[stackPtr++] = int(right);
-                    if (stackPtr < BVH_STACK_SIZE) 
-                        stack[stackPtr++] = int(left);
-                } else {
-                    if (stackPtr < BVH_STACK_SIZE) 
-                        stack[stackPtr++] = int(left);
-                    if (stackPtr < BVH_STACK_SIZE) 
-                        stack[stackPtr++] = int(right);
-                }
-            } else if (hitLeft) {
-                if (stackPtr < BVH_STACK_SIZE) 
-                    stack[stackPtr++] = int(left);
-            } else if (hitRight) {
-                if (stackPtr < BVH_STACK_SIZE) 
-                    stack[stackPtr++] = int(right);
-            }
-        }
-    }
-
-    return false;
-}
-
-bool traverseBLAS(vec3 origin, vec3 dir, float maxDist) {
-    vec3 invDir = 1.0 / dir;
-    int stack[BVH_STACK_SIZE];
-    int stackPtr = 0;
-    stack[stackPtr++] = 0;
-
-    while (stackPtr > 0) {
-        BVHNode node = bvhNodes[stack[--stackPtr]];
-        uint left     = floatBitsToUint(node.lminLeft.w);
-        uint right    = floatBitsToUint(node.lmaxRight.w);
-        uint triCount = floatBitsToUint(node.rminCount.w);
-        uint firstTri = floatBitsToUint(node.rmaxFirst.w);
-
-        if (triCount > 0u) {
-            for (uint i = firstTri; i < firstTri + triCount; ++i)
-                if (intersectTriangle(origin, dir, tris[i], maxDist))
+            for (uint i = firstTri; i < firstTri+triCount; ++i)
+                if (intersectTriangle(origin, dir, tris[blasOffset+i], maxDist))
                     return true;
         } else {
             float tL, tR;
-            bool hL = intersectAABB(origin, invDir,
-                          node.lminLeft.xyz, node.lmaxRight.xyz, maxDist, tL);
-            bool hR = intersectAABB(origin, invDir,
-                          node.rminCount.xyz, node.rmaxFirst.xyz, maxDist, tR);
+            bool hL = intersectAABB(origin, invDir, n.lminLeft.xyz, n.lmaxRight.xyz, maxDist, tL);
+            bool hR = intersectAABB(origin, invDir, n.rminCount.xyz, n.rmaxFirst.xyz, maxDist, tR);
             if (hL && hR) {
-                if (tL < tR) {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
-                } else {
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);
-                    if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right);
+                if (tL < tR) { 
+                    if(sp < BVH_STACK_SIZE) 
+                        stack[sp++]=int(right); 
+                    if(sp < BVH_STACK_SIZE) 
+                        stack[sp++]=int(left); 
+                } else { 
+                    if(sp < BVH_STACK_SIZE) 
+                        stack[sp++]=int(left);  
+                    if(sp < BVH_STACK_SIZE) 
+                        stack[sp++]=int(right); 
                 }
-            } else if (hL) { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(left);  }
-            else if  (hR) { if (stackPtr < BVH_STACK_SIZE) stack[stackPtr++] = int(right); }
+            } else if (hL) { 
+                if(sp < BVH_STACK_SIZE) 
+                    stack[sp++]=int(left);  
+            } else if (hR) { 
+                if(sp < BVH_STACK_SIZE) 
+                    stack[sp++]=int(right); 
+            }
         }
     }
+
     return false;
 }
 
@@ -271,17 +220,13 @@ bool traverseBLAS(vec3 origin, vec3 dir, float maxDist) {
 bool traverseTLAS(vec3 worldOrigin, vec3 worldDir, float worldMaxDist) {
     uint n = uint(instances.length());
     for (uint i = 0u; i < n; ++i) {
-        mat4 w2o = inverse(instances[i].transform);
+        vec3 oOrigin = (instances[i].worldToObject * vec4(worldOrigin, 1.0)).xyz;
+        vec3 oDir = (instances[i].worldToObject * vec4(worldDir, 0.0)).xyz;
 
-        vec3 objOrigin = (w2o * vec4(worldOrigin, 1.0)).xyz;
-        vec3 objDir    = (w2o * vec4(worldDir,    0.0)).xyz;
+        // Convert world-space endpoint to object space for a tight maxDist
+        float oMaxDist = length((instances[i].worldToObject * vec4(worldOrigin + worldDir * worldMaxDist, 1.0)).xyz - oOrigin);
 
-        // Convert world space max distance to object space by transforming the
-        // endpoint and measuring the distance from the transformed origin.
-        vec3  worldEnd = worldOrigin + worldDir * worldMaxDist;
-        float objMaxDist = length((w2o * vec4(worldEnd, 1.0)).xyz - objOrigin);
-
-        if (traverseBLAS(objOrigin, objDir, objMaxDist))
+        if (traverseBLAS(oOrigin, oDir, oMaxDist, instances[i].blasInfo.x, instances[i].blasInfo.z))
             return true;
     }
     return false;
@@ -343,13 +288,6 @@ void main(){
             if (!traverseTLAS(origin, toLight / toLightMagnitude, toLightMagnitude)) {
                 ++numVisibleSamples;
             }
-
-            /*
-            vec3 toLightDir = normalize(toLight);
-
-            if (!traverseBVH(origin, toLightDir, toLightMagnitude))
-                ++numVisibleSamples;
-                */
         }
     } else {
         for (int i = 0; i < M_SAMPLES; ++i){
