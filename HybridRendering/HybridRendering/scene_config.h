@@ -10,7 +10,7 @@ enum class SceneID {
 	Sponza,
 };
 
-inline constexpr SceneID ACTIVE_SCENE = SceneID::Backpack9;
+inline constexpr SceneID ACTIVE_SCENE = SceneID::Sponza;
 
 struct SceneConfig {
 	std::string modelPath{};

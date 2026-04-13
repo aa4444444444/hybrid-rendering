@@ -28,6 +28,7 @@
 #include "baked_triangle.h"
 #include "material_gpu.h"
 #include "instance_gpu.h"
+#include "scene_config.h"
 #define TINYBVH_IMPLEMENTATION
 #include "tiny_bvh.h"
 #include "model.h"
@@ -163,38 +164,28 @@ int main() {
     Shader temporalAccumulationShader{ "temporal_accumulation.comp" };
     Shader spatialFilteringShader{ "spatial_filtering.comp" };
 
-    // Load the backpack model
-    PLOGD << "Loading backpack model"; 
+    // Load the scene
+    const SceneConfig scene = getSceneConfig(ACTIVE_SCENE);
+    renderSettings.camera = Camera(scene.cameraStart);
+
+    PLOGD << "Loading model"; 
+
     std::chrono::steady_clock::time_point model_begin = std::chrono::steady_clock::now();
-    Model backpackModel("resources/objects/backpack/backpack.obj");
-    //Model backpackModel("resources/objects/sponza-glTF/Sponza.gltf");
+    Model sceneModel(scene.modelPath);
     std::chrono::steady_clock::time_point model_end = std::chrono::steady_clock::now();
-    PLOGI << "Model loaded: " << backpackModel.meshes.size() << " mesh(es) in " <<
+
+    PLOGI << "Model loaded: " << sceneModel.meshes.size() << " mesh(es) in " <<
         std::chrono::duration_cast<std::chrono::milliseconds>(model_end - model_begin).count() << "[ms]";
 
     // Object positions
-    std::vector<glm::vec3> objectPositions{};
-    objectPositions.emplace_back(-3.0, -0.5, -3.0);
-    objectPositions.emplace_back(0.0, -0.5, -3.0);
-    objectPositions.emplace_back(3.0, -0.5, -3.0);
-    objectPositions.emplace_back(-3.0, -0.5, 0.0);
-    objectPositions.emplace_back(0.0, -0.5, 0.0);
-    objectPositions.emplace_back(3.0, -0.5, 0.0);
-    objectPositions.emplace_back(-3.0, -0.5, 3.0);
-    objectPositions.emplace_back(0.0, -0.5, 3.0);
-    objectPositions.emplace_back(3.0, -0.5, 3.0);
-    
-    // Sponza
-    //objectPositions.emplace_back(0.0, 0.0, 0.0);
+    std::vector<glm::vec3> objectPositions = scene.instancePositions;
 
     // Object model transforms
     std::vector<glm::mat4> objectTransforms{};
-    for (unsigned int i{ 0 }; i < objectPositions.size(); ++i) {
-        glm::mat4 model{ glm::mat4(1.0f) }; 
-        model = glm::translate(model, objectPositions[i]);
-        model = glm::scale(model, glm::vec3(0.3f));        
-        
-        objectTransforms.push_back(model);
+    for (const auto& pos : objectPositions) {
+        glm::mat4 m = glm::translate(glm::mat4(1.0f), pos);
+        m = glm::scale(m, glm::vec3(scene.instanceScale));
+        objectTransforms.push_back(m);
     }
 
     // Floor model transform
@@ -220,16 +211,16 @@ int main() {
 
     std::vector<BakedTriangle> bakedTriangles{};
 
-    // Bake the backpack mesh geometry once in object space
+    // Bake the scene mesh geometry once in object space
     // All 9 instances share this single BLAS
-    for (const Mesh& mesh : backpackModel.meshes) {
+    for (const Mesh& mesh : sceneModel.meshes) {
         const auto& verts = mesh.vertices;
         const auto& idxList = mesh.indices;
 
         CpuTexture* diffTex = nullptr;
         for (const Texture& tex : mesh.textures) {
             if (tex.type == "texture_diffuse") {
-                std::string fullPath = backpackModel.directory + "/" + tex.path;
+                std::string fullPath = sceneModel.directory + "/" + tex.path;
                 diffTex = &getCpuTexture(fullPath);
                 break;
             }
@@ -373,7 +364,7 @@ int main() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, backpackBvhSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    // Floor BVH nodes at binding 7
+    // Floor BVH nodes at binding 7, only uploaded when the scene has a floor
     unsigned int floorBvhSSBO{};
     glGenBuffers(1, &floorBvhSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, floorBvhSSBO);
@@ -391,7 +382,9 @@ int main() {
     for (size_t i = 0; i < objectPositions.size(); ++i) {
         instanceData.emplace_back(objectTransforms[i], backpackBlasOffset, backpackBlasCount, 0u);
     }
-    instanceData.emplace_back(glm::mat4(1.0f), floorBlasOffset, floorBlasCount, 1u); // floor
+    if (scene.includeFloor) {
+        instanceData.emplace_back(glm::mat4(1.0f), floorBlasOffset, floorBlasCount, 1u); // floor
+    }
 
     unsigned int instanceSSBO{};
     glGenBuffers(1, &instanceSSBO);
@@ -404,12 +397,13 @@ int main() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // Upload Material SSBO
+    // MAT_MESH=0 is always present; MAT_FLOOR=1 is only added when includeFloor=true
     std::vector<MaterialGPU> materials{};
-    // albedo, reflectivity, roughness
-    materials.emplace_back(glm::vec3(0.8f, 0.7f, 0.6f), 1.0f, 0.0f); // backpack
-    //materials.emplace_back(glm::vec3(0.8f, 0.8f, 0.8f), 0.3f, 0.7f); // sponza
-    materials.emplace_back(glm::vec3(0.9f, 0.9f, 0.9f), 1.0f, 0.0f); // floor
-
+    materials.emplace_back(scene.meshAlbedo, scene.meshReflectivity, scene.meshRoughness);
+    if (scene.includeFloor) {
+        materials.emplace_back(scene.floorAlbedo, scene.floorReflectivity, scene.floorRoughness);
+    }
+        
     unsigned int materialSSBO{};
     glGenBuffers(1, &materialSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, materialSSBO);
@@ -616,9 +610,7 @@ int main() {
     }
     */
     
-    lightPositions.emplace_back(0.0f, 0.05f, 2.0f); // Backpacks
-    //lightPositions.emplace_back(0.0f, 3.5f, 0.0f); // Sponza
-    //lightPositions.emplace_back(0.0, 0.0, 8.0f);
+    lightPositions.emplace_back(scene.lightPosition);
     lightColors.emplace_back(1.0f, 1.0f, 1.0f);
 
     shaderLightingPass.use();
@@ -697,18 +689,20 @@ int main() {
         {
             shaderGeometryPass.setMat4("model", objectTransforms[i]);
             shaderGeometryPass.setMat4("prevModel", prevModels[i]);
-            backpackModel.Draw(shaderGeometryPass);
+            sceneModel.Draw(shaderGeometryPass);
         }
 
         // Drawing the floor
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, floorDiffuseMap);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, floorSpecularMap);
-        shaderGeometryPass.setMat4("model", floorModel);
-        shaderGeometryPass.setMat4("prevModel", floorModel); // floor is static
-        Utility::renderFloor();
-
+        if (scene.includeFloor) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, floorDiffuseMap);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, floorSpecularMap);
+            shaderGeometryPass.setMat4("model", floorModel);
+            shaderGeometryPass.setMat4("prevModel", floorModel); // floor is static
+            Utility::renderFloor();
+        }
+        
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         for (unsigned int i = 0; i < objectPositions.size(); ++i) {
@@ -1069,23 +1063,26 @@ int main() {
             firstFrame = false;
         }
 
-        float radius{ 4.0f };
-        glm::vec3 center(0.0f, -0.5f, 0.0f);
-        constexpr float angleStep{ 2.0f * glm::pi<float>() / 8.0f };
-        int orbitIndex{ 0 };
-        for (int i = 0; i < 9; ++i) {
-            if (i == 4) { 
-                objectTransforms[i] = glm::scale(glm::rotate(glm::translate(glm::mat4(1.0f), objectPositions[i]), time, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(0.3f));
-                continue; 
+        if (scene.animateInstances) {
+            float radius{ 4.0f };
+            glm::vec3 center(0.0f, -0.5f, 0.0f);
+            constexpr float angleStep{ 2.0f * glm::pi<float>() / 8.0f };
+            int orbitIndex{ 0 };
+            for (int i = 0; i < 9; ++i) {
+                if (i == 4) { 
+                    objectTransforms[i] = glm::scale(glm::rotate(glm::translate(glm::mat4(1.0f), objectPositions[i]), time, glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(0.3f));
+                    continue; 
+                }
+
+                float angle = time + orbitIndex * angleStep;
+
+                objectPositions[i] = center + glm::vec3(radius * cos(angle), 0.0f, radius * sin(angle));
+                objectTransforms[i] = glm::scale(glm::translate(glm::mat4(1.0f), objectPositions[i]), glm::vec3(0.3f));
+
+                ++orbitIndex;
             }
-
-            float angle = time + orbitIndex * angleStep;
-
-            objectPositions[i] = center + glm::vec3(radius * cos(angle), 0.0f, radius * sin(angle));
-            objectTransforms[i] = glm::scale(glm::translate(glm::mat4(1.0f), objectPositions[i]), glm::vec3(0.3f));
-
-            ++orbitIndex;
         }
+        
     }
     PLOGD << "Render Loop Terminated";
 

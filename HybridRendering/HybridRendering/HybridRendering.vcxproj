@@ -166,6 +166,7 @@
     <ClInclude Include="material_gpu.h" />
     <ClInclude Include="mesh.h" />
     <ClInclude Include="model.h" />
+    <ClInclude Include="scene_config.h" />
     <ClInclude Include="settings.h" />
     <ClInclude Include="shader.h" />
     <ClInclude Include="stb_image.h" />
