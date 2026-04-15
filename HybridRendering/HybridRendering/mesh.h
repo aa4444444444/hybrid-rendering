@@ -42,17 +42,26 @@ struct Texture {
 class Mesh {
 public:
     // mesh Data
-    vector<Vertex>       vertices;
+    vector<Vertex> vertices;
     vector<unsigned int> indices;
-    vector<Texture>      textures;
+    vector<Texture> textures;
     unsigned int VAO;
 
+    // Per-mesh PBR material properties, usually read from gltf pbrMetallicRoughness
+    glm::vec3 albedo{ 0.8f, 0.8f, 0.8f };
+    float metallic{ 0.0f };
+    float roughness{ 1.0f };
+
     // constructor
-    Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures)
+    Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures, glm::vec3 albedo = glm::vec3(0.8f), 
+        float metallic = 0.0f, float roughenss = 1.0f)
     {
         this->vertices = vertices;
         this->indices = indices;
         this->textures = textures;
+        this->albedo = albedo;
+        this->metallic = metallic;
+        this->roughness = roughness;
 
         // now that we have all the required data, set the vertex buffers and its attribute pointers.
         setupMesh();

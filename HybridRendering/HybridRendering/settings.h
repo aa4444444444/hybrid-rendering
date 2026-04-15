@@ -42,6 +42,15 @@ namespace Settings {
 	};
 
 	/*
+		Whether to use Reflections
+	*/
+	enum class ReflectionRenderMode {
+		off, // 0
+		on, // 1
+		num_options
+	};
+
+	/*
 		Whether to use BVH
 	*/
 	enum class BVHRenderMode {
@@ -91,6 +100,7 @@ namespace Settings {
 		GBufferRenderMode gBufferRenderMode { GBufferRenderMode::texture };
 		DeferredShadingRenderMode deferredShadingRenderMode { DeferredShadingRenderMode::texture };
 		SVGFRenderMode svgfRenderMode{ SVGFRenderMode::on };
+		ReflectionRenderMode reflectionRenderMode{ ReflectionRenderMode::on };
 		BVHRenderMode bvhRenderMode{ BVHRenderMode::on };
 		LightIntensity lightIntensity{ LightIntensity::six };
 		bool enableMouseLook{ false };

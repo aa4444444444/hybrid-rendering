@@ -12,7 +12,7 @@ namespace Utility {
 
 	void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 
-	void processInput(GLFWwindow* window, Settings::RenderSettings& renderSettings, float deltaTime);
+	void processInput(GLFWwindow* window, Settings::RenderSettings& renderSettings, float deltaTime, bool& firstMouse);
 
 	unsigned int loadTexture(std::string_view path, int activeTextureUnit);
 

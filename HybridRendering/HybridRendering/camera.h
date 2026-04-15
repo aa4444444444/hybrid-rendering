@@ -83,17 +83,14 @@ public:
             Position += Right * velocity;
     }
 
-    void ProcessLookKeyboard(float xoffset, float yoffset, float deltaTime, GLboolean constrainPitch = true) {
-        xoffset *= MouseSensitivity;
-        yoffset *= MouseSensitivity;
+    void ProcessLookKeyboard(float yawOffset, float pitchOffset) {
+        Yaw += yawOffset;
+        Pitch += pitchOffset;
 
-        if (constrainPitch)
-        {
-            if (Pitch > 89.0f)
-                Pitch = 89.0f;
-            if (Pitch < -89.0f)
-                Pitch = -89.0f;
-        }
+        if (Pitch > 89.0f) { Pitch = 89.0f; }
+        if (Pitch < -89.0f) { Pitch = -89.0f; }
+
+        updateCameraVectors();
     }
 
     // processes input received from a mouse input system. Expects the offset value in both the x and y direction.

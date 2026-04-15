@@ -18,8 +18,6 @@
 #include <plog/Formatters/TxtFormatter.h>
 #include "plog/Initializers/ConsoleInitializer.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-
 #include "constants.h"
 #include "camera.h"
 #include "shader.h"
@@ -29,6 +27,7 @@
 #include "material_gpu.h"
 #include "instance_gpu.h"
 #include "scene_config.h"
+#include "cpu_texture.h"
 #define TINYBVH_IMPLEMENTATION
 #include "tiny_bvh.h"
 #include "model.h"
@@ -37,6 +36,10 @@
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void buildGBuffer(unsigned int& gPosition, unsigned int& gNormal, unsigned int& gAlbedoSpec, unsigned int& gMotionDepthVec);
+void buildPrevPositionNormalTex(unsigned int& prevPositionTex, unsigned int& prevNormalTex);
+void buildShadowReflectionTex(unsigned int& gRayTracedShadowsArray, unsigned int& gReflectionRaw);
+void buildSVGFTex(unsigned int* visibilityHistoryArray, unsigned int* historyLengthArray, unsigned int* momentsArray, unsigned int* spatialFilteredArray);
+CpuTexture loadCpuTexture(const std::string& path);
 
 // settings
 bool firstMouse{ true };
@@ -50,78 +53,6 @@ float lastFrame{ 0.0f };
 
 // Object id counter
 static uint32_t nextID{ 0 };
-
-// Material IDs
-constexpr uint32_t MAT_SPONZA{ 0 };
-constexpr uint32_t MAT_BACKPACK{ 0 };
-constexpr uint32_t MAT_FLOOR{ 1 };
-
-struct CpuTexture {
-    unsigned char* data{ nullptr };
-    int width{ 0 };
-    int height{ 0 };
-    int channels{ 0 };
-
-    bool valid() const { return data != nullptr && width > 0 && height > 0; }
-
-    // Bilinear sample at UV coordinates [0,1].  Returns sRGB in [0,1].
-    glm::vec3 sample(glm::vec2 uv) const {
-        if (!valid()) return glm::vec3(0.8f); // neutral grey fallback
-
-        // Wrap UVs (repeat mode)
-        uv.x = uv.x - std::floor(uv.x);
-        uv.y = uv.y - std::floor(uv.y);
-
-        // stb_image loads with y=0 at top; flip to match OpenGL convention
-        uv.y = 1.0f - uv.y;
-
-        float px = uv.x * static_cast<float>(width - 1);
-        float py = uv.y * static_cast<float>(height - 1);
-
-        int x0 = static_cast<int>(px);
-        int y0 = static_cast<int>(py);
-        int x1 = std::min(x0 + 1, width - 1);
-        int y1 = std::min(y0 + 1, height - 1);
-        float fx = px - static_cast<float>(x0);
-        float fy = py - static_cast<float>(y0);
-
-        auto fetch = [&](int x, int y) -> glm::vec3 {
-            int idx = (y * width + x) * channels;
-            float r = data[idx + 0] / 255.0f;
-            float g = (channels >= 2) ? data[idx + 1] / 255.0f : r;
-            float b = (channels >= 3) ? data[idx + 2] / 255.0f : r;
-            return glm::vec3(r, g, b);
-            };
-
-        // Bilinear interpolation
-        glm::vec3 c00 = fetch(x0, y0);
-        glm::vec3 c10 = fetch(x1, y0);
-        glm::vec3 c01 = fetch(x0, y1);
-        glm::vec3 c11 = fetch(x1, y1);
-
-        return glm::mix(glm::mix(c00, c10, fx),
-            glm::mix(c01, c11, fx), fy);
-    }
-
-    void free() {
-        if (data) { stbi_image_free(data); data = nullptr; }
-    }
-};
-
-// Load a texture file into CPU memory for sampling.
-// The caller is responsible for calling free() when done.
-CpuTexture loadCpuTexture(const std::string& path) {
-    CpuTexture tex{};
-    // stbi_set_flip_vertically_on_load was set to true for OpenGL textures,
-    // but we handle the flip ourselves in CpuTexture::sample, so load raw.
-    stbi_set_flip_vertically_on_load(false);
-    tex.data = stbi_load(path.c_str(), &tex.width, &tex.height, &tex.channels, 0);
-    stbi_set_flip_vertically_on_load(true); // restore for GPU texture loads
-    if (!tex.data) {
-        PLOGE << "CpuTexture: failed to load " << path;
-    }
-    return tex;
-}
 
 int main() {
     plog::ColorConsoleAppender<plog::TxtFormatter> consoleAppender;
@@ -177,6 +108,9 @@ int main() {
     PLOGI << "Model loaded: " << sceneModel.meshes.size() << " mesh(es) in " <<
         std::chrono::duration_cast<std::chrono::milliseconds>(model_end - model_begin).count() << "[ms]";
 
+    // Floor material ID comes right after all mesh material slots
+    const uint32_t MAT_FLOOR_ID = static_cast<uint32_t>(sceneModel.meshes.size());
+
     // Object positions
     std::vector<glm::vec3> objectPositions = scene.instancePositions;
 
@@ -211,9 +145,12 @@ int main() {
 
     std::vector<BakedTriangle> bakedTriangles{};
 
-    // Bake the scene mesh geometry once in object space
-    // All 9 instances share this single BLAS
-    for (const Mesh& mesh : sceneModel.meshes) {
+    // Bake the scene mesh geometry once in object space.
+    // Each mesh gets a unique materialID equal to its index in sceneModel.meshes,
+    // so the GPU can look up per-mesh PBR properties from the material SSBO.
+    for (size_t meshIdx = 0; meshIdx < sceneModel.meshes.size(); ++meshIdx) {
+        const Mesh& mesh = sceneModel.meshes[meshIdx];
+        const uint32_t meshMatID = static_cast<uint32_t>(meshIdx);
         const auto& verts = mesh.vertices;
         const auto& idxList = mesh.indices;
 
@@ -250,14 +187,14 @@ int main() {
             bt.diffuse0 = glm::vec4(color0, 1.0f);
             bt.diffuse1 = glm::vec4(color1, 1.0f);
             bt.diffuse2 = glm::vec4(color2, 1.0f);
-            bt.materialID = MAT_BACKPACK;
+            bt.materialID = meshMatID;
             bt.instanceIndex = 0; // shared BLAS; transform applied per-instance by shader
             bt.id = ++nextID;
             bakedTriangles.push_back(bt);
         }
     }
 
-    // Backpack BLAS (shared by all 9 instances)
+    // Scene BLAS
     // https://cg.informatik.uni-freiburg.de/intern/seminar/raytracing%20-%20Keller%20-%20SIGGRAPH%202019%202%20Acceleration%20Data%20Structures.pdf
     std::vector<TriangleGPU> backpackBlasTriangles{};
     // bvhvec4 triples that TinyBVH's builder consumes. 
@@ -265,8 +202,10 @@ int main() {
     // After the BVH build, TinyBVH provides a primIdx[] remapping array.
     // We use it to reorder backpackBlasTriangles into sortedTriangles so that the triangle SSBO is in the order the BVH nodes expect.
     std::vector<tinybvh::bvhvec4> backpackBlasVerts{};
+
     backpackBlasTriangles.reserve(bakedTriangles.size());
     backpackBlasVerts.reserve(bakedTriangles.size() * 3);
+
     for (const BakedTriangle& bt : bakedTriangles) {
         glm::vec4 ov0{ bt.lv0, 1.0f }, ov1{ bt.lv1, 1.0f },
             ov2{ bt.lv2, 1.0f }, oN{ bt.lNormal, 0.0f };
@@ -289,7 +228,7 @@ int main() {
         glm::vec4 fN = glm::normalize(floorNormalM * glm::vec4(
             Utility::floorVertices[j + 19], Utility::floorVertices[j + 20], Utility::floorVertices[j + 21], 0.0f));
         floorBlasTriangles.emplace_back(fv0, fv1, fv2, fN,
-            floorDiffuseBaked, floorDiffuseBaked, floorDiffuseBaked, ++nextID, MAT_FLOOR);
+            floorDiffuseBaked, floorDiffuseBaked, floorDiffuseBaked, ++nextID, MAT_FLOOR_ID);
         floorBlasVerts.push_back({ fv0.x, fv0.y, fv0.z, 0.0f });
         floorBlasVerts.push_back({ fv1.x, fv1.y, fv1.z, 0.0f });
         floorBlasVerts.push_back({ fv2.x, fv2.y, fv2.z, 0.0f });
@@ -397,9 +336,11 @@ int main() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // Upload Material SSBO
-    // MAT_MESH=0 is always present; MAT_FLOOR=1 is only added when includeFloor=true
     std::vector<MaterialGPU> materials{};
-    materials.emplace_back(scene.meshAlbedo, scene.meshReflectivity, scene.meshRoughness);
+    materials.reserve(sceneModel.meshes.size() + 1);
+    for (const Mesh& mesh : sceneModel.meshes) {
+        materials.emplace_back(mesh.albedo, mesh.metallic, mesh.roughness);
+    }
     if (scene.includeFloor) {
         materials.emplace_back(scene.floorAlbedo, scene.floorReflectivity, scene.floorRoughness);
     }
@@ -438,15 +379,7 @@ int main() {
 
     // G-Buffer keeps track of positions, normals, albedo, specular intensity, and motion/depth information
     unsigned int gPosition{}, gNormal{}, gAlbedoSpec{}, gMotionDepthVec{};
-
     buildGBuffer(gPosition, gNormal, gAlbedoSpec, gMotionDepthVec);
-
-    // create and attach depth buffer (renderbuffer)
-    unsigned int rboDepth{};
-    glGenRenderbuffers(1, &rboDepth);
-    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, Constants::SCR_WIDTH, Constants::SCR_HEIGHT);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
 
     // finally check if framebuffer is complete
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
@@ -454,133 +387,29 @@ int main() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // We need to keep track of previous position and previous normal in order to implement SVGF
-    unsigned int prevPositionTex, prevNormalTex;
+    unsigned int prevPositionTex{}, prevNormalTex{};
+    buildPrevPositionNormalTex(prevPositionTex, prevNormalTex);
 
-    // Position
-    glGenTextures(1, &prevPositionTex);
-    glBindTexture(GL_TEXTURE_2D, prevPositionTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
-        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
-        0, GL_RGB, GL_FLOAT, NULL);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    // Normal
-    glGenTextures(1, &prevNormalTex);
-    glBindTexture(GL_TEXTURE_2D, prevNormalTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
-        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
-        0, GL_RGB, GL_FLOAT, NULL);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-
-    // Create Ray Tracing Shadow Textures
-    // We want to create multiple textures, since we need to understand the shadow created by EACH light source
-    // E.g. we can't just say that if it's in the shadow of one light source then it's in shadow period, because
-    // while it could be in the shadow of one light, it might be illuminated by another. 
-    unsigned int gRayTracedShadowsArray;
-    glGenTextures(1, &gRayTracedShadowsArray);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
-    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, Constants::NR_LIGHTS);
+    unsigned int gRayTracedShadowsArray{}, gReflectionRaw{};
+    buildShadowReflectionTex(gRayTracedShadowsArray, gReflectionRaw);
 
     // Visibility History Array keeps track of 2 texture arrays which are used for the temporal part of SVGF
     // Each texel of a texture keeps track of the accumulated shadow visibility up to the current frame for a light
     // We need 2 in order to properly ping-pong
     unsigned int visibilityHistoryArray[2];
-    glGenTextures(2, visibilityHistoryArray);
-
-    for (int i = 0; i < 2; ++i)
-    {
-        glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[i]);
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
-            1,
-            GL_R16F,
-            Constants::SCR_WIDTH,
-            Constants::SCR_HEIGHT,
-            Constants::NR_LIGHTS);
-
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-
+    
     // History Length Array keeps track of 2 textures which are used for the temporal part of SVGF
     // Each texel of the texture keeps track of the number of frames that have contributed to this pixel
     // We need 2 in order to properly ping-pong
     unsigned int historyLengthArray[2];
-    glGenTextures(2, historyLengthArray);
-
-    for (int i = 0; i < 2; ++i)
-    {
-        glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[i]);
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
-            1,
-            GL_R16F,
-            Constants::SCR_WIDTH,
-            Constants::SCR_HEIGHT,
-            Constants::NR_LIGHTS);
-
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-
+    
     // Moments Array
     unsigned int momentsArray[2];
-    glGenTextures(2, momentsArray);
-
-    for (int i = 0; i < 2; ++i)
-    {
-        glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[i]);
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
-            1,
-            GL_RG16F,
-            Constants::SCR_WIDTH,
-            Constants::SCR_HEIGHT,
-            Constants::NR_LIGHTS);
-
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-
+    
     // Spatial Filtered Array
     unsigned int spatialFilteredArray[2];
-    glGenTextures(2, spatialFilteredArray);
-
-    for (int i = 0; i < 2; ++i)
-    {
-        glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[i]);
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
-            1,
-            GL_R16F,
-            Constants::SCR_WIDTH,
-            Constants::SCR_HEIGHT,
-            Constants::NR_LIGHTS);
-
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-
-    // Reflection textures 
-    unsigned int gReflectionRaw{};
-    glGenTextures(1, &gReflectionRaw);
-    glBindTexture(GL_TEXTURE_2D, gReflectionRaw);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    
+    buildSVGFTex(visibilityHistoryArray, historyLengthArray, momentsArray, spatialFilteredArray);
 
     // Variables used to index arrays for ping-ponging
     // 'ping' should always be used as the previous and 'pong'
@@ -640,7 +469,7 @@ int main() {
         lastFrame = currentFrame;
         time += deltaTime;
 
-        Utility::processInput(window, renderSettings, deltaTime);
+        Utility::processInput(window, renderSettings, deltaTime, firstMouse);
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL3_NewFrame();
@@ -971,6 +800,8 @@ int main() {
         // Defines how we render the objects, see deferred_shading.frag for details
         shaderLightingPass.setInt("renderingMode", static_cast<int>(renderSettings.deferredShadingRenderMode));
 
+        shaderLightingPass.setBool("useReflections", static_cast<bool>(renderSettings.reflectionRenderMode));
+
         // bind reflectance map
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, gReflectionRaw);
@@ -1165,4 +996,143 @@ void buildGBuffer(unsigned int& gPosition, unsigned int& gNormal, unsigned int& 
 
     // Output from our fragment shader will be written into the 4 buffers
     glDrawBuffers(4, attachments);
+
+    // create and attach depth buffer (renderbuffer)
+    unsigned int rboDepth{};
+    glGenRenderbuffers(1, &rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, Constants::SCR_WIDTH, Constants::SCR_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+}
+
+void buildPrevPositionNormalTex(unsigned int& prevPositionTex, unsigned int& prevNormalTex) {
+    // Position
+    glGenTextures(1, &prevPositionTex);
+    glBindTexture(GL_TEXTURE_2D, prevPositionTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
+        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
+        0, GL_RGB, GL_FLOAT, NULL);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Normal
+    glGenTextures(1, &prevNormalTex);
+    glBindTexture(GL_TEXTURE_2D, prevNormalTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F,
+        Constants::SCR_WIDTH, Constants::SCR_HEIGHT,
+        0, GL_RGB, GL_FLOAT, NULL);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+void buildShadowReflectionTex(unsigned int& gRayTracedShadowsArray, unsigned int& gReflectionRaw) {
+    // Create Ray Tracing Shadow Textures
+    // We want to create multiple textures, since we need to understand the shadow created by EACH light source
+    // E.g. we can't just say that if it's in the shadow of one light source then it's in shadow period, because
+    // while it could be in the shadow of one light, it might be illuminated by another.
+    glGenTextures(1, &gRayTracedShadowsArray);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_R16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, Constants::NR_LIGHTS);
+
+    // Reflection textures 
+    glGenTextures(1, &gReflectionRaw);
+    glBindTexture(GL_TEXTURE_2D, gReflectionRaw);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+void buildSVGFTex(unsigned int* visibilityHistoryArray, unsigned int* historyLengthArray, unsigned int* momentsArray, unsigned int* spatialFilteredArray) {
+    glGenTextures(2, visibilityHistoryArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    glGenTextures(2, historyLengthArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    glGenTextures(2, momentsArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_RG16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    glGenTextures(2, spatialFilteredArray);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[i]);
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY,
+            1,
+            GL_R16F,
+            Constants::SCR_WIDTH,
+            Constants::SCR_HEIGHT,
+            Constants::NR_LIGHTS);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+}
+
+// Load a texture file into CPU memory for sampling.
+// The caller is responsible for calling free() when done.
+CpuTexture loadCpuTexture(const std::string& path) {
+    CpuTexture tex{};
+    // stbi_set_flip_vertically_on_load was set to true for OpenGL textures,
+    // but we handle the flip ourselves in CpuTexture::sample, so load raw.
+    stbi_set_flip_vertically_on_load(false);
+    tex.data = stbi_load(path.c_str(), &tex.width, &tex.height, &tex.channels, 0);
+    stbi_set_flip_vertically_on_load(true); // restore for GPU texture loads
+    if (!tex.data) {
+        PLOGE << "CpuTexture: failed to load " << path;
+    }
+    return tex;
 }

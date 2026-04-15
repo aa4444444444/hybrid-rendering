@@ -29,6 +29,9 @@
     // 1 ==> Shadows
     uniform int renderingMode;
 
+    // Whether to render reflections in the scene
+    uniform bool useReflections;
+
     void main()
     {             
         // retrieve data from gbuffer
@@ -70,7 +73,7 @@
 
         vec3 finalColor = lighting;
 
-        if(true){
+        if(useReflections){
             vec3 reflection = texture(reflectionMap, TexCoords).rgb;
 
             float reflectWeight = clamp(Specular, 0.0, 1.0);

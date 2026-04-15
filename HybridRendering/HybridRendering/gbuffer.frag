@@ -71,6 +71,11 @@ void main()
         float depth = ndcDepth * 0.5 + 0.5;
         gAlbedoSpec = vec4(vec3(depth), 1.0);
     } else { // Default to rendering texture 
+        vec4 diffuseSample = texture(texture_diffuse1, TexCoords);
+
+        // Alpha mask cutout (matches glTF MASK mode, alphaCutoff = 0.5)
+        if (diffuseSample.a < 0.5) discard;
+
         // and the diffuse per-fragment color
         gAlbedoSpec.rgb = texture(texture_diffuse1, TexCoords).rgb;
 

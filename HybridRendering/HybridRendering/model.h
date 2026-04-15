@@ -153,6 +153,20 @@ private:
         // specular: texture_specularN
         // normal: texture_normalN
 
+        float metallic = 0.0f;
+        float roughness = 1.0f;
+
+        // Read PBR metallic/roughness factors from gltf pbrMetallicRoughness
+        material->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
+        material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
+
+        // Read base albedo factor from gltf baseColorFactor
+        glm::vec3 albedo(0.8f);
+        aiColor4D baseColor;
+        if (material->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS) {
+            albedo = glm::vec3(baseColor.r, baseColor.g, baseColor.b);
+        }
+
         // 1. diffuse maps
         vector<Texture> diffuseMaps = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse");
         textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
@@ -167,7 +181,7 @@ private:
         textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
 
         // return a mesh object created from the extracted mesh data
-        return Mesh(vertices, indices, textures);
+        return Mesh(vertices, indices, textures, albedo, metallic, roughness);
     }
 
     // checks all material textures of a given type and loads the textures if they're not loaded yet.

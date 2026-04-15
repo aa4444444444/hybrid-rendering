@@ -44,7 +44,7 @@ namespace Utility {
         glViewport(0, 0, width, height);
     }
 
-    void processInput(GLFWwindow* window, Settings::RenderSettings& renderSettings, float deltaTime) {
+    void processInput(GLFWwindow* window, Settings::RenderSettings& renderSettings, float deltaTime, bool& firstMouse) {
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, true);
         }
@@ -61,6 +61,7 @@ namespace Utility {
         if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             renderSettings.enableMouseLook = true;
+            firstMouse = true;
         }
 
         // Move camera position with keys
@@ -75,36 +76,22 @@ namespace Utility {
             camera.ProcessKeyboard(RIGHT, deltaTime);
 
         // Adjust camera angle with keys
-        constexpr float adjustAmount{ 0.4f };
-        float& lastY = renderSettings.lastY;
-        float& lastX = renderSettings.lastX;
+        //constexpr float adjustAmount{ 2.0f };
+        //float& lastY = renderSettings.lastY;
+        //float& lastX = renderSettings.lastX;
+        float turnSpeed = 180.0f;
+        float amount = turnSpeed * deltaTime;
         if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-            lastY += adjustAmount;
-            if (lastY > Constants::SCR_HEIGHT) {
-                lastY = Constants::SCR_HEIGHT;
-            }
-            camera.ProcessMouseMovement(0.0f, adjustAmount);
+            camera.ProcessLookKeyboard(0.0f, amount);
         }
         if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-            lastY -= adjustAmount;
-            if (lastY < 0.0f) {
-                lastY = 0.0f;
-            }
-            camera.ProcessMouseMovement(0.0f, -adjustAmount);
+            camera.ProcessLookKeyboard(0.0f, -amount);
         }
         if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-            lastX -= adjustAmount;
-            if (lastX < 0.0f) {
-                lastX = 0.0f;
-            }
-            camera.ProcessMouseMovement(-adjustAmount, 0.0f);
+            camera.ProcessLookKeyboard(-amount, 0.0f);
         }
         if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-            lastX += adjustAmount;
-            if (lastX > Constants::SCR_WIDTH) {
-                lastX = Constants::SCR_WIDTH;
-            }
-            camera.ProcessMouseMovement(adjustAmount, 0.0f);
+            camera.ProcessLookKeyboard(amount, 0.0f);
         }
     }
 
@@ -357,6 +344,30 @@ namespace Utility {
                     renderSettings.svgfRenderMode = static_cast<Settings::SVGFRenderMode>(i);
 
                 if (static_cast<int>(renderSettings.svgfRenderMode) == i)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::EndCombo();
+        }
+
+        /* ==============================================================================
+        Reflection Shading Render Mode dropdown
+        =============================================================================== */
+        const std::array<std::string, 2> reflectionRenderModes{
+            "Off",
+            "On"
+        };
+
+        const std::string reflectionRenderModePreview{ reflectionRenderModes[static_cast<int>(renderSettings.reflectionRenderMode)] };
+
+        if (ImGui::BeginCombo("Reflection Render Mode", reflectionRenderModePreview.c_str(), renderModeFlags)) {
+            for (int i{ 0 }; i < static_cast<int>(Settings::ReflectionRenderMode::num_options); ++i) {
+                bool is_selected{ static_cast<int>(renderSettings.reflectionRenderMode) == i };
+
+                if (ImGui::Selectable(reflectionRenderModes[i].c_str(), is_selected))
+                    renderSettings.reflectionRenderMode = static_cast<Settings::ReflectionRenderMode>(i);
+
+                if (static_cast<int>(renderSettings.reflectionRenderMode) == i)
                     ImGui::SetItemDefaultFocus();
             }
 
