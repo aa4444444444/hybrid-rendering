@@ -49,12 +49,12 @@ public:
 
     // Per-mesh PBR material properties, usually read from gltf pbrMetallicRoughness
     glm::vec3 albedo{ 0.8f, 0.8f, 0.8f };
-    float metallic{ 0.0f };
-    float roughness{ 1.0f };
+    float metallic{ 1.0f };
+    float roughness{ 0.0f };
 
     // constructor
     Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures, glm::vec3 albedo = glm::vec3(0.8f), 
-        float metallic = 0.0f, float roughenss = 1.0f)
+        float metallic = 0.0f, float roughness = 1.0f)
     {
         this->vertices = vertices;
         this->indices = indices;

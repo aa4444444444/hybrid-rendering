@@ -33,7 +33,7 @@ void main()
 
     // compute variance
     vec2 moments = texture(momentsTex, texCoord).rg;
-    float variance = max(1e-4, moments.y - moments.x*moments.x);
+    float variance = max(0.0f, moments.y - moments.x*moments.x);
 
     vec3 centerPos  = texture(gPosition, texCoordNoLight).xyz;
     vec3 centerNorm = normalize(texture(gNormal, texCoordNoLight).xyz);

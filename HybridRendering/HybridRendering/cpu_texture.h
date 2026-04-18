@@ -51,6 +51,34 @@ struct CpuTexture {
             glm::mix(c01, c11, fx), fy);
     }
 
+    // Sample metallic-roughness texture per glTF convention.
+    // Returns vec2(roughness, metallic) in G and B channels respectively.
+    glm::vec2 sampleMetallicRoughness(glm::vec2 uv) const {
+        if (!valid()) return glm::vec2(1.0f, 0.0f); // roughness=1, metallic=0 fallback
+
+        uv.x = uv.x - std::floor(uv.x);
+        uv.y = uv.y - std::floor(uv.y);
+        uv.y = 1.0f - uv.y;
+
+        float px = uv.x * static_cast<float>(width - 1);
+        float py = uv.y * static_cast<float>(height - 1);
+        int x0 = static_cast<int>(px), y0 = static_cast<int>(py);
+        int x1 = std::min(x0 + 1, width - 1), y1 = std::min(y0 + 1, height - 1);
+        float fx = px - x0, fy = py - y0;
+
+        // Fetch G (roughness) and B (metallic) channels only
+        auto fetch = [&](int x, int y) -> glm::vec2 {
+            int idx = (y * width + x) * channels;
+            float g = (channels >= 2) ? data[idx + 1] / 255.0f : 1.0f;
+            float b = (channels >= 3) ? data[idx + 2] / 255.0f : 0.0f;
+            return glm::vec2(g, b); // (roughness, metallic)
+            };
+
+        glm::vec2 c00 = fetch(x0, y0), c10 = fetch(x1, y0);
+        glm::vec2 c01 = fetch(x0, y1), c11 = fetch(x1, y1);
+        return glm::mix(glm::mix(c00, c10, fx), glm::mix(c01, c11, fx), fy);
+    }
+
     void free() {
         if (data) { stbi_image_free(data); data = nullptr; }
     }

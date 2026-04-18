@@ -163,6 +163,15 @@ int main() {
             }
         }
 
+        CpuTexture* mrTex = nullptr;
+        for (const Texture& tex : mesh.textures) {
+            if (tex.type == "texture_metallic_roughness") {
+                std::string fullPath = sceneModel.directory + "/" + tex.path;
+                mrTex = &getCpuTexture(fullPath);
+                break;
+            }
+        }
+
         for (size_t f = 0; f < idxList.size(); f += 3) {
             const Vertex& a = verts[idxList[f]];
             const Vertex& b = verts[idxList[f + 1]];
@@ -191,6 +200,25 @@ int main() {
             bt.instanceIndex = 0; // shared BLAS; transform applied per-instance by shader
             bt.id = ++nextID;
             bakedTriangles.push_back(bt);
+        }
+
+        if (mrTex && mrTex->valid() && !mesh.indices.empty()) {
+            // Sample at the centroid of the first triangle as a representative value
+            const Vertex& a = mesh.vertices[mesh.indices[0]];
+            const Vertex& b = mesh.vertices[mesh.indices[1]];
+            const Vertex& c = mesh.vertices[mesh.indices[2]];
+            glm::vec2 centroidUV = (a.TexCoords + b.TexCoords + c.TexCoords) / 3.0f;
+            glm::vec2 mr = mrTex->sampleMetallicRoughness(centroidUV);
+            
+            float scalarRoughness = mesh.roughness;
+            float scalarMetallic = mesh.metallic;
+
+            sceneModel.meshes[meshIdx].roughness = mr.x * scalarRoughness;
+            sceneModel.meshes[meshIdx].metallic = mr.y * scalarMetallic;
+        } else {
+            // No MR texture — use scene config overrides as the fallback
+            sceneModel.meshes[meshIdx].roughness = scene.meshRoughness;
+            sceneModel.meshes[meshIdx].metallic = scene.meshReflectivity;
         }
     }
 
@@ -240,6 +268,23 @@ int main() {
     for (auto& [path, tex] : cpuTextureCache) {
         tex.free();
     }
+
+    // --- MR bake diagnostics ---
+    int mrTexFound = 0, mrTexMissing = 0;
+    for (size_t i = 0; i < sceneModel.meshes.size(); ++i) {
+        const Mesh& m = sceneModel.meshes[i];
+        bool hasMR = false;
+        for (const Texture& t : m.textures)
+            if (t.type == "texture_metallic_roughness") { hasMR = true; break; }
+        if (hasMR) mrTexFound++; else mrTexMissing++;
+        PLOGD << "Mesh " << i
+            << " | metallic=" << m.metallic
+            << " roughness=" << m.roughness
+            << " | MRtex=" << (hasMR ? "YES" : "NO");
+    }
+    PLOGI << "MR texture summary: " << mrTexFound << " meshes with MR tex, "
+        << mrTexMissing << " without";
+
     cpuTextureCache.clear();
     PLOGD << "CPU texture data freed after baking";
 
@@ -644,35 +689,35 @@ int main() {
                 temporalAccumulationShader.setInt("maxHistory", 32);
                 temporalAccumulationShader.setBool("firstFrameBool", firstFrame);
 
-                // 0 — Raw noisy shadows
+                // 0 - Raw noisy shadows
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
 
-                // 1 — Previous accumulated visibility
+                // 1 - Previous accumulated visibility
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[ping]);
 
-                // 2 — Previous history length
+                // 2 - Previous history length
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[ping]);
 
-                // 3 — Motion and depth information
+                // 3 - Motion and depth information
                 glActiveTexture(GL_TEXTURE3);
                 glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
 
-                // 4 — Current frame positions (G-buffer)
+                // 4 - Current frame positions (G-buffer)
                 glActiveTexture(GL_TEXTURE4);
                 glBindTexture(GL_TEXTURE_2D, gPosition);
 
-                // 5 — Current frame normals (G-buffer)
+                // 5 - Current frame normals (G-buffer)
                 glActiveTexture(GL_TEXTURE5);
                 glBindTexture(GL_TEXTURE_2D, gNormal);
 
-                // 6 — Previous frame positions
+                // 6 - Previous frame positions
                 glActiveTexture(GL_TEXTURE6);
                 glBindTexture(GL_TEXTURE_2D, prevPositionTex);
 
-                // 7 — Previous frame normals
+                // 7 - Previous frame normals
                 glActiveTexture(GL_TEXTURE7);
                 glBindTexture(GL_TEXTURE_2D, prevNormalTex);
 
@@ -683,7 +728,7 @@ int main() {
                 // ----------- OUTPUTS (image stores) -----------
                 // Remember, we want to write to Pong and read from Ping
                 
-                // 9 — Write new visibility
+                // 9 - Write new visibility
                 glBindImageTexture(
                     9,
                     visibilityHistoryArray[pong],
@@ -693,7 +738,7 @@ int main() {
                     GL_WRITE_ONLY,
                     GL_R16F);
 
-                // 10 — Write new history length
+                // 10 - Write new history length
                 glBindImageTexture(
                     10,
                     historyLengthArray[pong],
@@ -703,7 +748,7 @@ int main() {
                     GL_WRITE_ONLY,
                     GL_R16F);
 
-                // 11 — Write new moments
+                // 11 - Write new moments
                 glBindImageTexture(
                     11,
                     momentsArray[pong],
@@ -724,11 +769,12 @@ int main() {
         }
         
         // Spatial Filtering (SVGF A-Trous)
+        int lastSpatialWrite = pong;
         if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::spatial) {
             for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
             {
-                int readIndex = ping;
-                int writeIndex = pong;
+                int readIndex = 0;
+                int writeIndex = 1;
 
                 for (int pass = 0; pass < 5; ++pass)
                 {
@@ -774,6 +820,8 @@ int main() {
                         (Constants::SCR_HEIGHT + 16 - 1) / 16);
 
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+                    lastSpatialWrite = writeIndex;
 
                     std::swap(readIndex, writeIndex);
                 }
@@ -829,9 +877,9 @@ int main() {
                 glBindTexture(GL_TEXTURE_2D_ARRAY, gRayTracedShadowsArray);
             }
             else if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::temporal) {
-                glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[ping]);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, visibilityHistoryArray[pong]);
             } else {
-                glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[ping]);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, spatialFilteredArray[lastSpatialWrite]);
             }
 
             

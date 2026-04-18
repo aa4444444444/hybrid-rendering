@@ -30,15 +30,15 @@ uniform int maxHistory;
 uniform bool firstFrameBool;
 
 // Disocclusion thresholds
-const float PLANE_DISTANCE_THRESHOLD = 0.2f;
-const float NORMAL_DISTANCE_THRESHOLD = 0.9f;
+const float PLANE_DISTANCE_THRESHOLD = 5.0f;
+const float NORMAL_DISTANCE_THRESHOLD = 0.1f;
 
 // https://diharaw.github.io/post/adventures_in_hybrid_rendering/
 bool isReprojectionValid(vec3 currentPos, vec3 currentNormal, vec3 prevPos, vec3 prevNormal) {
     // Plane distance check
     vec3 toCurrent = currentPos - prevPos;
     float distToPlane = abs(dot(toCurrent, currentNormal));
-    if (distToPlane <= PLANE_DISTANCE_THRESHOLD)
+    if (distToPlane < PLANE_DISTANCE_THRESHOLD)
         return false;
 
     
@@ -109,10 +109,12 @@ void main()
         vec2 previousMoments = texture(prevMoments, historyCoord).rg;
 
         // first moment (mean)
-        float m1 = mix(historySample.r, currentSample.r, alpha);
+        float m1 = mix(previousMoments.r, currentSample.r, alpha);
 
         // second moment (mean of squares)
         float m2 = mix(previousMoments.g, currentSample.r * currentSample.r, alpha);
+
+        updatedMoments = vec2(m1, m2);
 
         // Accumulate the sample
         outputVisibility = mix(historySample, currentSample, alpha);

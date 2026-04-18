@@ -76,9 +76,6 @@ namespace Utility {
             camera.ProcessKeyboard(RIGHT, deltaTime);
 
         // Adjust camera angle with keys
-        //constexpr float adjustAmount{ 2.0f };
-        //float& lastY = renderSettings.lastY;
-        //float& lastX = renderSettings.lastX;
         float turnSpeed = 180.0f;
         float amount = turnSpeed * deltaTime;
         if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {

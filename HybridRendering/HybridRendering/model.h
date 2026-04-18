@@ -153,10 +153,9 @@ private:
         // specular: texture_specularN
         // normal: texture_normalN
 
-        float metallic = 0.0f;
+        float metallic = 1.0f;
         float roughness = 1.0f;
 
-        // Read PBR metallic/roughness factors from gltf pbrMetallicRoughness
         material->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
         material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
 
@@ -179,6 +178,10 @@ private:
         // 4. height maps
         std::vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_AMBIENT, "texture_height");
         textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
+        // 5. metallic-roughness map (glTF packed: G=roughness, B=metallic)
+        // Assimp exposes the combined metallicRoughnessTexture under aiTextureType_UNKNOWN
+        std::vector<Texture> metallicRoughnessMaps = loadMaterialTextures(material, aiTextureType_UNKNOWN, "texture_metallic_roughness");
+        textures.insert(textures.end(), metallicRoughnessMaps.begin(), metallicRoughnessMaps.end());
 
         // return a mesh object created from the extracted mesh data
         return Mesh(vertices, indices, textures, albedo, metallic, roughness);

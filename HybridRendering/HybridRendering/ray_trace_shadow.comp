@@ -175,6 +175,7 @@ bool traverseBLAS(vec3 origin, vec3 dir, float maxDist, uint blasOffset, uint no
     int stack[BVH_STACK_SIZE]; 
     int sp = 0;
     stack[sp++] = 0;
+
     while (sp > 0) {
         int ni = stack[--sp];
         BVHNode n = (nodeSet == 0u) ? backpackNodes[ni] : floorNodes[ni];
@@ -182,6 +183,7 @@ bool traverseBLAS(vec3 origin, vec3 dir, float maxDist, uint blasOffset, uint no
         uint right = floatBitsToUint(n.lmaxRight.w);
         uint triCount = floatBitsToUint(n.rminCount.w);
         uint firstTri = floatBitsToUint(n.rmaxFirst.w);
+
         if (triCount > 0u) {
             for (uint i = firstTri; i < firstTri+triCount; ++i)
                 if (intersectTriangle(origin, dir, tris[blasOffset+i], maxDist))
@@ -190,6 +192,7 @@ bool traverseBLAS(vec3 origin, vec3 dir, float maxDist, uint blasOffset, uint no
             float tL, tR;
             bool hL = intersectAABB(origin, invDir, n.lminLeft.xyz, n.lmaxRight.xyz, maxDist, tL);
             bool hR = intersectAABB(origin, invDir, n.rminCount.xyz, n.rmaxFirst.xyz, maxDist, tR);
+
             if (hL && hR) {
                 if (tL < tR) { 
                     if(sp < BVH_STACK_SIZE) 
@@ -219,6 +222,7 @@ bool traverseBLAS(vec3 origin, vec3 dir, float maxDist, uint blasOffset, uint no
 // space, calls traverseBLAS, and returns true on first hit.
 bool traverseTLAS(vec3 worldOrigin, vec3 worldDir, float worldMaxDist) {
     uint n = uint(instances.length());
+
     for (uint i = 0u; i < n; ++i) {
         vec3 oOrigin = (instances[i].worldToObject * vec4(worldOrigin, 1.0)).xyz;
         vec3 oDir = (instances[i].worldToObject * vec4(worldDir, 0.0)).xyz;
