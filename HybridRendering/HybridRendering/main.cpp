@@ -37,6 +37,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 void buildGBuffer(unsigned int& gPosition, unsigned int& gNormal, unsigned int& gAlbedoSpec, unsigned int& gMotionDepthVec);
 void buildPrevPositionNormalTex(unsigned int& prevPositionTex, unsigned int& prevNormalTex);
+void buildGBufferArray(unsigned int& gBufferArray);
 void buildShadowReflectionTex(unsigned int& gRayTracedShadowsArray, unsigned int& gReflectionRaw);
 void buildSVGFTex(unsigned int* visibilityHistoryArray, unsigned int* historyLengthArray, unsigned int* momentsArray, unsigned int* spatialFilteredArray);
 CpuTexture loadCpuTexture(const std::string& path);
@@ -435,6 +436,9 @@ int main() {
     unsigned int prevPositionTex{}, prevNormalTex{};
     buildPrevPositionNormalTex(prevPositionTex, prevNormalTex);
 
+    unsigned int gBufferArray{};
+    buildGBufferArray(gBufferArray);
+
     unsigned int gRayTracedShadowsArray{}, gReflectionRaw{};
     buildShadowReflectionTex(gRayTracedShadowsArray, gReflectionRaw);
 
@@ -701,36 +705,20 @@ int main() {
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, historyLengthArray[ping]);
 
-                // 3 - Motion and depth information
+                // 3 - Previous Moments
                 glActiveTexture(GL_TEXTURE3);
-                glBindTexture(GL_TEXTURE_2D, gMotionDepthVec);
-
-                // 4 - Current frame positions (G-buffer)
-                glActiveTexture(GL_TEXTURE4);
-                glBindTexture(GL_TEXTURE_2D, gPosition);
-
-                // 5 - Current frame normals (G-buffer)
-                glActiveTexture(GL_TEXTURE5);
-                glBindTexture(GL_TEXTURE_2D, gNormal);
-
-                // 6 - Previous frame positions
-                glActiveTexture(GL_TEXTURE6);
-                glBindTexture(GL_TEXTURE_2D, prevPositionTex);
-
-                // 7 - Previous frame normals
-                glActiveTexture(GL_TEXTURE7);
-                glBindTexture(GL_TEXTURE_2D, prevNormalTex);
-
-                // 8 - Previous Moments
-                glActiveTexture(GL_TEXTURE8);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, momentsArray[ping]);
+
+                // 4 - gBuffer
+                glActiveTexture(GL_TEXTURE4);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, gBufferArray);
 
                 // ----------- OUTPUTS (image stores) -----------
                 // Remember, we want to write to Pong and read from Ping
                 
-                // 9 - Write new visibility
+                // 5 - Write new visibility
                 glBindImageTexture(
-                    9,
+                    5,
                     visibilityHistoryArray[pong],
                     0,
                     GL_FALSE,
@@ -738,9 +726,9 @@ int main() {
                     GL_WRITE_ONLY,
                     GL_R16F);
 
-                // 10 - Write new history length
+                // 6 - Write new history length
                 glBindImageTexture(
-                    10,
+                    6,
                     historyLengthArray[pong],
                     0,
                     GL_FALSE,
@@ -748,9 +736,9 @@ int main() {
                     GL_WRITE_ONLY,
                     GL_R16F);
 
-                // 11 - Write new moments
+                // 7 - Write new moments
                 glBindImageTexture(
-                    11,
+                    7,
                     momentsArray[pong],
                     0,
                     GL_FALSE,
@@ -924,6 +912,32 @@ int main() {
             prevNormalTex, GL_TEXTURE_2D, 0, 0, 0, 0,
             Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
 
+        // For gBufferArray
+        glCopyImageSubData(
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0,
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 3,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        glCopyImageSubData(
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1,
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 4,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        glCopyImageSubData(
+            gPosition, GL_TEXTURE_2D, 0, 0, 0, 0,
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        glCopyImageSubData(
+            gNormal, GL_TEXTURE_2D, 0, 0, 0, 0,
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
+        glCopyImageSubData(
+            gMotionDepthVec, GL_TEXTURE_2D, 0, 0, 0, 0,
+            gBufferArray, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 2,
+            Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 1);
+
         std::swap(ping, pong);
 
         // Render Dear ImGui Menu
@@ -1077,6 +1091,22 @@ void buildPrevPositionNormalTex(unsigned int& prevPositionTex, unsigned int& pre
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
+void buildGBufferArray(unsigned int& gBufferArray) {
+    // layer 0 = current position
+    // layer 1 = current normal
+    // layer 2 = motion vectors (xy used; matches gMotionDepthVec format)
+    // layer 3 = previous position
+    // layer 4 = previous normal
+    glGenTextures(1, &gBufferArray);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, gBufferArray);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA16F, Constants::SCR_WIDTH, Constants::SCR_HEIGHT, 5);
+
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
 void buildShadowReflectionTex(unsigned int& gRayTracedShadowsArray, unsigned int& gReflectionRaw) {

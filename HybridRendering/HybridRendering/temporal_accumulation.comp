@@ -11,19 +11,13 @@ layout(binding = 1) uniform sampler2DArray visibilityHistoryPrev;
 // Previous history length
 layout(binding = 2) uniform sampler2DArray historyLengthPrev;
 
-layout(binding = 3) uniform sampler2D motionVectors;
+layout(binding = 3) uniform sampler2DArray prevMoments;
 
-layout (binding = 4) uniform sampler2D gPosition;
-layout (binding = 5) uniform sampler2D gNormal;
+layout(binding = 4) uniform sampler2DArray gBuffer;
 
-layout(binding = 6) uniform sampler2D prevPosition;
-layout(binding = 7) uniform sampler2D prevNormal;
-
-layout(binding = 8) uniform sampler2DArray prevMoments;
-
-layout(r16f, binding = 9) writeonly uniform image2DArray visibilityHistoryOut;
-layout(r16f, binding = 10) writeonly uniform image2DArray historyLengthOut;
-layout(rg16f, binding = 11) writeonly uniform image2DArray momentsOut;
+layout(r16f, binding = 5) writeonly uniform image2DArray visibilityHistoryOut;
+layout(r16f, binding = 6) writeonly uniform image2DArray historyLengthOut;
+layout(rg16f, binding = 7) writeonly uniform image2DArray momentsOut;
 
 uniform int lightIndex;
 uniform int maxHistory;
@@ -32,6 +26,13 @@ uniform bool firstFrameBool;
 // Disocclusion thresholds
 const float PLANE_DISTANCE_THRESHOLD = 5.0f;
 const float NORMAL_DISTANCE_THRESHOLD = 0.1f;
+
+// G-Buffer Layers
+const int LAYER_CUR_POSITION = 0;
+const int LAYER_CUR_NORMAL = 1;
+const int LAYER_MOTION = 2;
+const int LAYER_PREV_POSITION = 3;
+const int LAYER_PREV_NORMAL = 4;
 
 // https://diharaw.github.io/post/adventures_in_hybrid_rendering/
 bool isReprojectionValid(vec3 currentPos, vec3 currentNormal, vec3 prevPos, vec3 prevNormal) {
@@ -65,7 +66,7 @@ void main()
     vec4 currentSample = texture(visibilityRaw, texCoord);
 
     // Get the motion vector for the current pixel
-    vec2 motionVector = texture(motionVectors, texCoordNoLight).rg;
+    vec2 motionVector = texture(gBuffer, vec3(texCoordNoLight, LAYER_MOTION)).rg;
 
     // Compute the history coordinate 
     vec2 historyCoordNoLight = texCoordNoLight + motionVector;
@@ -89,10 +90,10 @@ void main()
     float historyLength = 1.0f;
 
     // Retrieve the current and previous positions/normals to do disocclusion checks 
-    vec3 currentPos = texture(gPosition, texCoordNoLight).xyz;
-    vec3 currentNormal = normalize(texture(gNormal, texCoordNoLight).xyz);
-    vec3 previousPos = texture(prevPosition, historyCoordNoLight).xyz;
-    vec3 previousNormal = normalize(texture(prevNormal, historyCoordNoLight).xyz);
+    vec3 currentPos = texture(gBuffer, vec3(texCoordNoLight, LAYER_CUR_POSITION )).xyz;
+    vec3 currentNormal = normalize(texture(gBuffer, vec3(texCoordNoLight, LAYER_CUR_NORMAL)).xyz);
+    vec3 previousPos = texture(gBuffer, vec3(historyCoordNoLight, LAYER_PREV_POSITION)).xyz;
+    vec3 previousNormal = normalize(texture(gBuffer, vec3(historyCoordNoLight, LAYER_PREV_NORMAL)).xyz);
     
     // Check if the history sample is valid
     if(isReprojectionValid(currentPos, currentNormal, previousPos, previousNormal)) {
