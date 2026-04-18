@@ -93,6 +93,7 @@ namespace Settings {
 		{1.0, 0.0014, 0.000007},
 	};
 
+
 	/*
 		Defines various render settings
 	*/

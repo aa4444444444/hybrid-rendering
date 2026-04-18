@@ -1,1 +1,23 @@
 # hybrid-rendering
+
+- Asset Import dll remove from source code
+- 
+- Reources folder remove objects 
+- Go to .sln configuration settings, change VC++ Directories: (Include Directories and Library Directories) to point to a local path with those folders. 
+- In includes, you need GLFW (glfw3.h and glfw3native.h)
+- In include, you need glm
+- In include, you need glad (GL version 4.6)
+- In include, you need assimp
+- In include, you need plog
+- In lib you need assimp-vc143-mtd.dll
+- In lib you need assimp-vc143-mtd.exp
+- In lib you need assimp-vc143-mtd.lib
+- In lib you need assimp-vc143-mtd.pdb
+- in lib you need glfw3.lib
+- In lib you need unit.exe
+- In lib you need unit.exp
+- In lib you need unit.lib 
+- In lib you need unit.pdb
+- Copy the imgui docking branch into the source code folder imgui/
+- Add backpack.obj file into the resources/backpack folder
+- 
