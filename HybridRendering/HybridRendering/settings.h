@@ -149,6 +149,8 @@ namespace Settings {
 		StageTimer timerTemporalAccum{}; // SVGF temporal accumulation
 		StageTimer timerSpatialFilter{}; // SVGF spatial (A-Trous) filter
 		StageTimer timerLightingPass{};  // Deferred lighting / shading quad
+
+		bool showPipelineTime{ false };
 	};
 }
 

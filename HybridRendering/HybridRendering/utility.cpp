@@ -429,71 +429,75 @@ namespace Utility {
             ImGui::EndCombo();
         }
 
+        ImGui::Checkbox("Show Pipeline Time", &renderSettings.showPipelineTime);
+
         ImGui::End();
 
-        // Pipline timings window
-        ImGui::Begin("Pipeline Timings");
+        if (renderSettings.showPipelineTime) {
+            // Pipline timings window
+            ImGui::Begin("Pipeline Timings");
 
-        const char* stageNames[6] = {
-            "GBuffer",
-            "Shadow RT",
-            "Reflect RT",
-            "Temporal",
-            "Spatial",
-            "Lighting"
-        };
-        float stageMs[6] = {
-            renderSettings.timerGBuffer.avgMs,
-            renderSettings.timerShadowRT.avgMs,
-            renderSettings.timerReflectionRT.avgMs,
-            renderSettings.timerTemporalAccum.avgMs,
-            renderSettings.timerSpatialFilter.avgMs,
-            renderSettings.timerLightingPass.avgMs
-        };
+            const char* stageNames[6] = {
+                "GBuffer",
+                "Shadow RT",
+                "Reflect RT",
+                "Temporal",
+                "Spatial",
+                "Lighting"
+            };
+            float stageMs[6] = {
+                renderSettings.timerGBuffer.avgMs,
+                renderSettings.timerShadowRT.avgMs,
+                renderSettings.timerReflectionRT.avgMs,
+                renderSettings.timerTemporalAccum.avgMs,
+                renderSettings.timerSpatialFilter.avgMs,
+                renderSettings.timerLightingPass.avgMs
+            };
 
-        // Compute totals for the header
-        float totalMs{ 0.0f };
-        for (float v : stageMs) totalMs += v;
+            // Compute totals for the header
+            float totalMs{ 0.0f };
+            for (float v : stageMs) totalMs += v;
 
-        ImGui::Text("Total GPU time (avg): %.2f ms  |  %.1f FPS", totalMs, totalMs > 0.0f ? 1000.0f / totalMs : 0.0f);
-        ImGui::Separator();
+            ImGui::Text("Total GPU time (avg): %.2f ms  |  %.1f FPS", totalMs, totalMs > 0.0f ? 1000.0f / totalMs : 0.0f);
+            ImGui::Separator();
 
-        float maxMs{ 0.1f }; // floor so the chart isn't degenerate on the first frame
-        for (float v : stageMs) if (v > maxMs) maxMs = v;
+            float maxMs{ 0.1f }; // floor so the chart isn't degenerate on the first frame
+            for (float v : stageMs) if (v > maxMs) maxMs = v;
 
-        constexpr float kChartHeight{ 80.0f };
-        const float chartWidth{ ImGui::GetContentRegionAvail().x };
+            constexpr float kChartHeight{ 80.0f };
+            const float chartWidth{ ImGui::GetContentRegionAvail().x };
 
-        // Draw the histogram
-        const ImVec2 chartMin{ ImGui::GetCursorScreenPos() };
-        ImGui::PlotHistogram(
-            "##stages",
-            stageMs,
-            6,
-            0,
-            nullptr,
-            0.0f,
-            maxMs * 1.25f,
-            ImVec2(chartWidth, kChartHeight)
-        );
+            // Draw the histogram
+            const ImVec2 chartMin{ ImGui::GetCursorScreenPos() };
+            ImGui::PlotHistogram(
+                "##stages",
+                stageMs,
+                6,
+                0,
+                nullptr,
+                0.0f,
+                maxMs * 1.25f,
+                ImVec2(chartWidth, kChartHeight)
+            );
 
-        // detect which bar the mouse is over and show a named tooltip.
-        if (ImGui::IsItemHovered()) {
-            const float mouseX{ ImGui::GetIO().MousePos.x };
-            const float barWidth{ chartWidth / 6.0f };
-            const int hoveredBar{ static_cast<int>((mouseX - chartMin.x) / barWidth) };
-            if (hoveredBar >= 0 && hoveredBar < 6) {
-                float pct = (totalMs > 0.0f) ? (stageMs[hoveredBar] / totalMs) * 100.0f : 0.0f;
-                ImGui::SetTooltip("%d: %s\n%.2f ms (%.1f%%)", hoveredBar, stageNames[hoveredBar], stageMs[hoveredBar], pct);
+            // detect which bar the mouse is over and show a named tooltip.
+            if (ImGui::IsItemHovered()) {
+                const float mouseX{ ImGui::GetIO().MousePos.x };
+                const float barWidth{ chartWidth / 6.0f };
+                const int hoveredBar{ static_cast<int>((mouseX - chartMin.x) / barWidth) };
+                if (hoveredBar >= 0 && hoveredBar < 6) {
+                    float pct = (totalMs > 0.0f) ? (stageMs[hoveredBar] / totalMs) * 100.0f : 0.0f;
+                    ImGui::SetTooltip("%d: %s\n%.2f ms (%.1f%%)", hoveredBar, stageNames[hoveredBar], stageMs[hoveredBar], pct);
+                }
             }
-        }
 
-        ImGui::Separator();
-        for (int i = 0; i < 6; ++i) {
-            float pct = (totalMs > 0.0f) ? (stageMs[i] / totalMs) * 100.0f : 0.0f;
-            ImGui::Text("%d: %-12s  %6.2f ms  (%4.1f%%)", i, stageNames[i], stageMs[i], pct);
-        }
+            ImGui::Separator();
+            for (int i = 0; i < 6; ++i) {
+                float pct = (totalMs > 0.0f) ? (stageMs[i] / totalMs) * 100.0f : 0.0f;
+                ImGui::Text("%d: %-12s  %6.2f ms  (%4.1f%%)", i, stageNames[i], stageMs[i], pct);
+            }
 
-        ImGui::End();
+            ImGui::End();
+        }
     }
 }
