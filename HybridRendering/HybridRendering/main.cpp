@@ -534,6 +534,8 @@ int main() {
         const float quadratic{ lightingCoeffcients[2] };
 
         // geometry pass: render scene's geometry/color data into gbuffer
+        glFinish(); 
+        auto t_gbuffer = Settings::stageBegin();
         glBindFramebuffer(GL_FRAMEBUFFER, gBuffer);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -582,6 +584,7 @@ int main() {
         }
         
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        Settings::stageEnd(renderSettings.timerGBuffer, t_gbuffer);
 
         for (unsigned int i = 0; i < objectPositions.size(); ++i) {
             prevModels[i] = objectTransforms[i];
@@ -601,6 +604,8 @@ int main() {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         
         // Shadow Ray Tracer Pass
+        glFinish();
+        auto t_shadowRT = Settings::stageBegin();
         for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
         {
             rayTraceShadowShader.use();
@@ -648,8 +653,11 @@ int main() {
             // make sure writes are visible before next light
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
         }
+        Settings::stageEnd(renderSettings.timerShadowRT, t_shadowRT);
 
         // Reflection ray tracing pass
+        glFinish();
+        auto t_reflectRT = Settings::stageBegin();
         rayTraceReflectShader.use();
 
         // Image output at binding = 0
@@ -682,8 +690,11 @@ int main() {
 
         rayTraceReflectShader.dispatch((Constants::SCR_WIDTH + 15) / 16, (Constants::SCR_HEIGHT + 15) / 16);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        Settings::stageEnd(renderSettings.timerReflectionRT, t_reflectRT);
 
         // Temporal Accumulation pass: Apply temporal SVGF
+        glFinish();
+        auto t_temporal = Settings::stageBegin();
         if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::temporal) {
             for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
             {
@@ -755,8 +766,11 @@ int main() {
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
             }
         }
+        Settings::stageEnd(renderSettings.timerTemporalAccum, t_temporal);
         
         // Spatial Filtering (SVGF A-Trous)
+        glFinish();
+        auto t_spatial = Settings::stageBegin();
         int lastSpatialWrite = pong;
         if (renderSettings.svgfRenderMode == Settings::SVGFRenderMode::on || renderSettings.svgfRenderMode == Settings::SVGFRenderMode::spatial) {
             for (unsigned int i = 0; i < Constants::NR_LIGHTS; ++i)
@@ -815,8 +829,11 @@ int main() {
                 }
             }
         }
+        Settings::stageEnd(renderSettings.timerSpatialFilter, t_spatial);
 
         // lighting pass: calculate lighting by iterating over a screen filled quad pixel-by-pixel using the gbuffer's content.
+        glFinish();
+        auto t_lighting = Settings::stageBegin();
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shaderLightingPass.use();
@@ -900,6 +917,7 @@ int main() {
             shaderLightBox.setVec3("lightColor", lightColors[i]);
             Utility::renderCube();
         }
+        Settings::stageEnd(renderSettings.timerLightingPass, t_lighting);
 
         // Copy current position/normal information into previous textures
         glCopyImageSubData(

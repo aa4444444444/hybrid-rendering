@@ -4,6 +4,8 @@
 #include "constants.h"
 #include "camera.h"
 #include <glm/glm.hpp>
+#include <chrono>
+#include <array>
 
 namespace Settings {
 	/*
@@ -93,6 +95,36 @@ namespace Settings {
 		{1.0, 0.0014, 0.000007},
 	};
 
+	// Per-stage GPU timing helper struct
+	// Call glFinish() before and after each stage of the hybrid pipeline
+	// Using exponential moving average with alpha = 0.05 so the displayed
+	// value smooths out frame-to-frame noise without lagging too much. 
+	struct StageTimer {
+		static constexpr float kAlpha{ 0.05f }; // EMA smoothing factor
+
+		float avgMs{ 0.0f };
+
+		// Call this once per frame with the raw measured milliseconds for this stage.
+		void update(float measuredMs) {
+			if (avgMs == 0.0f)
+				avgMs = measuredMs;
+			else
+				avgMs = kAlpha * measuredMs + (1.0f - kAlpha) * avgMs;
+		}
+	};
+
+	// record a wall-clock start point (call glFinish() BEFORE this).
+	inline std::chrono::steady_clock::time_point stageBegin() {
+		return std::chrono::steady_clock::now();
+	}
+
+	// call glFinish(), then compute elapsed ms and feed the timer.
+	inline void stageEnd(StageTimer& timer, std::chrono::steady_clock::time_point start) {
+		glFinish();
+		auto end = std::chrono::steady_clock::now();
+		float ms = std::chrono::duration<float, std::milli>(end - start).count();
+		timer.update(ms);
+	}
 
 	/*
 		Defines various render settings
@@ -110,6 +142,13 @@ namespace Settings {
 
 		float lastX{ Constants::SCR_WIDTH / 2.0f };
 		float lastY{ Constants::SCR_HEIGHT / 2.0f };
+
+		StageTimer timerGBuffer{}; // Geometry pass
+		StageTimer timerShadowRT{}; // Shadow ray-tracing compute
+		StageTimer timerReflectionRT{}; // Reflection ray-tracing compute
+		StageTimer timerTemporalAccum{}; // SVGF temporal accumulation
+		StageTimer timerSpatialFilter{}; // SVGF spatial (A-Trous) filter
+		StageTimer timerLightingPass{};  // Deferred lighting / shading quad
 	};
 }
 
